@@ -1,0 +1,61 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(rg:*)",
+      "Bash(make test:*)",
+      "Bash(make check:*)",
+      "Bash(make lint:*)",
+      "Bash(make build:*)",
+      "Bash(pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run check:*)",
+      "Bash(npm run build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo check:*)",
+      "Bash(go test:*)",
+      "Bash(claude-workflow context:*)",
+      "Bash(claude-workflow project-id:*)",
+      "Bash(claude-workflow graph-status:*)",
+      "Bash(claude-workflow graph-query:*)",
+      "Bash(claude-workflow graph-path:*)",
+      "Bash(claude-workflow graph-explain:*)",
+      "Bash(claude-workflow graph-affected:*)",
+      "Bash(claude-workflow graph-diagnose:*)",
+      "Bash(claude-workflow graph-prepare:*)",
+      "Bash(claude-workflow graph-validate-chunk:*)",
+      "Bash(claude-workflow graph-finalize:*)",
+      "Bash(claude-workflow graph-post-commit:*)",
+      "Bash(claude-workflow commit:*)",
+      "Bash(claude-workflow amend-message:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git reset:*)",
+      "Bash(git clean:*)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(rm:*)"
+    ],
+    "defaultMode": "auto"
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "design@synced": false,
+    "pdf-viewer@synced": false
+  },
+  "advisorModel": "opus",
+  "theme": "dark",
+  "agentPushNotifEnabled": true
+}

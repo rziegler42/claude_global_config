@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""Submit reproducible, Git-backed test jobs to configured SSH runners.
+
+The same file is streamed to the remote host for each operation, so a runner
+needs only Python 3, Git, SSH access to the repository remote, and the project
+toolchain.  Project commands remain in .claude/remote-runner.toml; host details
+remain in ~/.claude/remotes.toml.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+import uuid
+
+
+CONFIG_PATHS = (
+    Path.home() / ".claude" / "remotes.toml",
+    Path.home() / ".config" / "remote-runner" / "remotes.toml",
+)
+JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"remote-runner: {message}")
+
+
+def b64(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode()).decode()
+
+
+def unb64(value: str) -> str:
+    return base64.urlsafe_b64decode(value.encode()).decode()
+
+
+def run(argv: list[str], *, cwd: Path | None = None, check: bool = True,
+        capture: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=cwd, check=check, text=True,
+                          capture_output=capture)
+
+
+def load_remotes() -> dict[str, dict[str, object]]:
+    path = next((item for item in CONFIG_PATHS if item.is_file()), None)
+    if path is None:
+        fail("no remotes file found (expected ~/.claude/remotes.toml)")
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    remotes = data.get("remotes")
+    if not isinstance(remotes, dict):
+        fail(f"{path} must contain [remotes.<name>] entries")
+    return remotes
+
+
+def remote_config(name: str) -> dict[str, object]:
+    config = load_remotes().get(name)
+    if not isinstance(config, dict):
+        fail(f"unknown remote {name!r}")
+    for required in ("ssh_host", "workspace_root", "max_jobs"):
+        if required not in config:
+            fail(f"remote {name!r} is missing {required!r}")
+    return config
+
+
+def git_value(repo: Path, *args: str) -> str:
+    result = run(["git", *args], cwd=repo, capture=True)
+    return result.stdout.strip()
+
+
+def source_ref_for(repo: Path, ref: str) -> str | None:
+    """Return a fetchable local branch or tag ref when one names ``ref``."""
+    result = run(
+        ["git", "rev-parse", "--verify", "--symbolic-full-name", ref],
+        cwd=repo, check=False, capture=True,
+    )
+    candidate = result.stdout.strip()
+    if candidate == "HEAD":
+        result = run(["git", "symbolic-ref", "--quiet", "HEAD"], cwd=repo,
+                     check=False, capture=True)
+        candidate = result.stdout.strip()
+    if candidate.startswith(("refs/heads/", "refs/tags/")):
+        return candidate
+    return None
+
+
+def project_config(repo: Path) -> tuple[str, dict[str, str], dict[str, dict[str, object]]]:
+    path = repo / ".claude" / "remote-runner.toml"
+    if not path.is_file():
+        fail(f"missing project runner contract: {path}")
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    project = data.get("project")
+    profiles = data.get("profiles")
+    if not isinstance(project, dict) or not isinstance(project.get("id"), str):
+        fail(f"{path} needs [project] id = \"...\"")
+    if not isinstance(profiles, dict):
+        fail(f"{path} needs one or more [profiles.<name>] entries")
+    commands: dict[str, str] = {}
+    requirements: dict[str, dict[str, object]] = {}
+    for name, profile in profiles.items():
+        if isinstance(profile, dict) and isinstance(profile.get("command"), str):
+            commands[name] = profile["command"]
+            required = profile.get("requirements", {})
+            if not isinstance(required, dict):
+                fail(f"profile {name!r} requirements must be a TOML table")
+            requirements[name] = required
+    if not commands:
+        fail(f"{path} has no runnable profiles")
+    return project["id"], commands, requirements
+
+
+def capability_mismatches(config: dict[str, object],
+                          requirements: dict[str, object]) -> list[str]:
+    capabilities = config.get("capabilities", {})
+    if not isinstance(capabilities, dict):
+        return ["capabilities is not a TOML table"]
+    mismatches: list[str] = []
+    for key in ("os", "arch"):
+        required = requirements.get(key)
+        if required is not None and capabilities.get(key) != required:
+            mismatches.append(f"{key}={required!r} required")
+    for key in ("min_memory_gib", "min_cpu_cores"):
+        required = requirements.get(key)
+        available_key = key.removeprefix("min_")
+        available = capabilities.get(available_key)
+        if isinstance(required, (int, float)) and (
+            not isinstance(available, (int, float)) or available < required
+        ):
+            mismatches.append(f"{key}={required} required")
+    required_labels = requirements.get("labels", [])
+    available_labels = capabilities.get("labels", [])
+    if not isinstance(required_labels, list) or not all(isinstance(x, str) for x in required_labels):
+        mismatches.append("profile labels must be an array of strings")
+    elif not isinstance(available_labels, list) or not all(isinstance(x, str) for x in available_labels):
+        mismatches.append("remote labels must be an array of strings")
+    else:
+        missing = sorted(set(required_labels) - set(available_labels))
+        if missing:
+            mismatches.append(f"missing labels: {', '.join(missing)}")
+    return mismatches
+
+
+def repository_root() -> Path:
+    root = run(["git", "rev-parse", "--show-toplevel"], capture=True).stdout.strip()
+    return Path(root)
+
+
+def remote_name_from_job(job: str) -> str:
+    if not JOB_ID.fullmatch(job) or "--" not in job:
+        fail("job ID is invalid")
+    return job.split("--", 1)[0]
+
+
+def invoke_worker(remote: str, operation: str, *arguments: str,
+                  stream: bool = False) -> subprocess.CompletedProcess[bytes]:
+    config = remote_config(remote)
+    worker_args = ["python3", "-", "--worker", operation,
+                   "--workspace-root", str(config["workspace_root"]),
+                   "--max-jobs", str(config["max_jobs"]), *arguments]
+    with Path(__file__).open("rb") as source:
+        try:
+            return subprocess.run(
+                ["ssh", str(config["ssh_host"]), *worker_args], stdin=source,
+                check=True, capture_output=not stream,
+            )
+        except subprocess.CalledProcessError as error:
+            if stream:
+                raise
+            detail = error.stderr.decode(errors="replace").strip()
+            if "not our ref" in detail:
+                fail("the requested commit is not reachable from origin; commit and push it before submitting")
+            fail(f"remote {remote!r} {operation} failed: {detail or 'no diagnostic returned'}")
+
+
+def recommend_remote(requirements: dict[str, object]) -> tuple[str | None, dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    ineligible: dict[str, list[str]] = {}
+    unavailable: dict[str, str] = {}
+    for name, config in sorted(load_remotes().items()):
+        if not isinstance(config, dict):
+            continue
+        mismatches = capability_mismatches(config, requirements)
+        if mismatches:
+            ineligible[name] = mismatches
+            continue
+        try:
+            availability = json.loads(invoke_worker(name, "availability").stdout)
+        except (SystemExit, json.JSONDecodeError) as error:
+            unavailable[name] = str(error)
+            continue
+        if availability.get("available_slots", 0) <= 0:
+            unavailable[name] = "no available job slots"
+            continue
+        capabilities = config.get("capabilities", {})
+        candidates.append({
+            "name": name, "available_slots": availability["available_slots"],
+            "running_jobs": availability["running_jobs"],
+            "memory_gib": capabilities.get("memory_gib", 0),
+            "cpu_cores": capabilities.get("cpu_cores", 0),
+            "labels": capabilities.get("labels", []),
+        })
+    candidates.sort(
+        key=lambda item: (
+            item["available_slots"], item["memory_gib"], item["cpu_cores"], item["name"],
+        ),
+        reverse=True,
+    )
+    recommendation = candidates[0]["name"] if candidates else None
+    return recommendation, {
+        "requirements": requirements, "recommended": recommendation,
+        "eligible": candidates, "ineligible": ineligible, "unavailable": unavailable,
+    }
+
+
+def controller(args: argparse.Namespace) -> None:
+    if args.action == "remotes":
+        for name, config in sorted(load_remotes().items()):
+            capabilities = config.get("capabilities", {})
+            memory = capabilities.get("memory_gib", "?") if isinstance(capabilities, dict) else "?"
+            cores = capabilities.get("cpu_cores", "?") if isinstance(capabilities, dict) else "?"
+            print(f"{name}\t{config.get('ssh_host')}\tjobs={config.get('max_jobs')}\t{cores} cores\t{memory} GiB")
+        return
+
+    if args.action == "recommend":
+        repo = repository_root()
+        _, profiles, requirements = project_config(repo)
+        if args.profile not in profiles:
+            fail(f"unknown profile {args.profile!r}; available: {', '.join(sorted(profiles))}")
+        _, report = recommend_remote(requirements[args.profile])
+        print(json.dumps(report, indent=2))
+        return
+
+    if args.action == "submit":
+        repo = repository_root()
+        project, profiles, requirements = project_config(repo)
+        if args.profile not in profiles:
+            fail(f"unknown profile {args.profile!r}; available: {', '.join(sorted(profiles))}")
+        remote = args.remote
+        if args.best:
+            remote, report = recommend_remote(requirements[args.profile])
+            if remote is None:
+                fail(f"no eligible available remote for profile {args.profile!r}: {json.dumps(report)}")
+        ref = args.ref or "HEAD"
+        commit = git_value(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        source_url = git_value(repo, "remote", "get-url", "origin")
+        source_ref = source_ref_for(repo, ref)
+        job = f"{remote}--{project}--{time.strftime('%Y%m%d-%H%M%S')}--{uuid.uuid4().hex[:8]}"
+        result = invoke_worker(
+            remote, "submit", "--job", job, "--project", b64(project),
+            "--source-url", b64(source_url), "--commit", commit,
+            *( ["--source-ref", b64(source_ref)] if source_ref else []),
+            "--command", b64(profiles[args.profile]),
+        )
+        print(result.stdout.decode(), end="")
+        return
+
+    if args.action == "prune":
+        if args.success_days < 0 or args.failure_days < 0:
+            fail("retention periods must be non-negative")
+        result = invoke_worker(
+            args.remote, "prune", "--success-days", str(args.success_days),
+            "--failure-days", str(args.failure_days),
+            *( ["--apply"] if args.apply else []),
+        )
+        print(result.stdout.decode(), end="")
+        return
+
+    remote = remote_name_from_job(args.job)
+    if args.action == "log":
+        invoke_worker(remote, "log", "--job", args.job,
+                      *( ["--follow"] if args.follow else []), stream=True)
+        return
+    result = invoke_worker(remote, args.action, "--job", args.job)
+    print(result.stdout.decode(), end="")
+
+
+def refresh_state(metadata: dict[str, object], metadata_path: Path) -> bool:
+    """Return whether the recorded job process remains live."""
+    pid = metadata.get("pid")
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        if metadata.get("state") == "RUNNING":
+            result_name = metadata.get("exit_status")
+            result = Path(result_name) if isinstance(result_name, str) else None
+            if result is not None and result.is_file() and result.read_text().strip() == "0":
+                metadata["state"] = "PASSED"
+            elif result is not None and result.is_file():
+                metadata["state"] = "FAILED"
+            else:
+                metadata["state"] = "UNKNOWN_EXIT"
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        return False
+
+
+def availability_worker(jobs_root: Path, max_jobs: int) -> None:
+    running = 0
+    for metadata_path in jobs_root.glob("*/metadata.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if refresh_state(metadata, metadata_path):
+            running += 1
+    print(json.dumps({
+        "running_jobs": running,
+        "max_jobs": max_jobs,
+        "available_slots": max(0, max_jobs - running),
+    }))
+
+
+def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
+                 args: argparse.Namespace) -> None:
+    now = time.time()
+    candidates: list[dict[str, object]] = []
+    for metadata_path in sorted(jobs_root.glob("*/metadata.json")):
+        try:
+            metadata = json.loads(metadata_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        job_dir = metadata_path.parent
+        if refresh_state(metadata, metadata_path):
+            continue
+        state = str(metadata.get("state", "UNKNOWN_EXIT"))
+        created = metadata.get("created_at")
+        timestamp = float(created) if isinstance(created, (int, float)) else job_dir.stat().st_mtime
+        age_days = (now - timestamp) / 86400
+        limit = args.success_days if state == "PASSED" else args.failure_days
+        if age_days < limit:
+            continue
+        size = sum(path.stat().st_size for path in job_dir.rglob("*") if path.is_file())
+        candidates.append({
+            "job": metadata.get("job", job_dir.name), "state": state,
+            "age_days": round(age_days, 1), "size_bytes": size,
+            "worktree": metadata.get("worktree"), "project": metadata.get("project"),
+        })
+
+    if args.apply:
+        removed: list[str] = []
+        for item in candidates:
+            job = str(item["job"])
+            job_dir = jobs_root / job
+            worktree = item.get("worktree")
+            project = item.get("project")
+            if isinstance(worktree, str) and isinstance(project, str):
+                bare = projects_root / project / "repo.git"
+                if bare.is_dir():
+                    subprocess.run(
+                        ["git", "--git-dir", str(bare), "worktree", "remove", "--force", worktree],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+            if job_dir.parent == jobs_root and job_dir.is_dir():
+                shutil.rmtree(job_dir)
+                removed.append(job)
+        print(json.dumps({"mode": "applied", "removed": removed}, indent=2))
+    else:
+        print(json.dumps({"mode": "preview", "candidates": candidates}, indent=2))
+
+
+def worker(args: argparse.Namespace) -> None:
+    root = Path(args.workspace_root).expanduser().resolve()
+    jobs_root = root / "jobs"
+    projects_root = root / "projects"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    projects_root.mkdir(parents=True, exist_ok=True)
+    if args.worker_action == "availability":
+        availability_worker(jobs_root, args.max_jobs)
+        return
+    if args.worker_action == "prune":
+        prune_worker(root, projects_root, jobs_root, args)
+        return
+    if args.job is None:
+        fail("job ID is required")
+    if not JOB_ID.fullmatch(args.job):
+        fail("job ID is invalid")
+    job_dir = jobs_root / args.job
+    metadata_path = job_dir / "metadata.json"
+
+    if args.worker_action == "submit":
+        if job_dir.exists():
+            fail(f"job already exists: {args.job}")
+        running = 0
+        for record in jobs_root.glob("*/metadata.json"):
+            try:
+                metadata = json.loads(record.read_text())
+                if refresh_state(metadata, record):
+                    running += 1
+            except (OSError, json.JSONDecodeError):
+                continue
+        if running >= args.max_jobs:
+            fail(f"runner capacity reached ({running}/{args.max_jobs} jobs running)")
+
+        project = unb64(args.project)
+        source_url = unb64(args.source_url)
+        source_ref = unb64(args.source_ref) if args.source_ref else None
+        command = unb64(args.command)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", project):
+            fail("project ID contains unsupported characters")
+        bare = projects_root / project / "repo.git"
+        bare.parent.mkdir(parents=True, exist_ok=True)
+        if not bare.exists():
+            run(["git", "init", "--bare", str(bare)])
+            run(["git", "-C", str(bare), "remote", "add", "origin", source_url])
+        else:
+            run(["git", "-C", str(bare), "remote", "set-url", "origin", source_url])
+        try:
+            run([
+                "git", "-C", str(bare), "fetch", "--prune", "origin",
+                source_ref or args.commit,
+            ])
+            run(["git", "-C", str(bare), "cat-file", "-e", f"{args.commit}^{{commit}}"])
+        except subprocess.CalledProcessError:
+            fail("runner could not fetch the requested revision from origin; push the branch or tag first")
+
+        job_dir.mkdir()
+        worktree = job_dir / "worktree"
+        run(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(worktree), args.commit])
+        dut_commit = git_value(worktree, "rev-parse", "HEAD")
+        dut_clean = not git_value(worktree, "status", "--porcelain")
+        if dut_commit != args.commit or not dut_clean:
+            subprocess.run(
+                ["git", "--git-dir", str(bare), "worktree", "remove", "--force", str(worktree)],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            shutil.rmtree(job_dir, ignore_errors=True)
+            fail("remote DUT checkout did not match the requested clean commit")
+        log = job_dir / "run.log"
+        exit_status = job_dir / "exit-status"
+        shell_command = (
+            f"cd {shlex.quote(str(worktree))} && {command}; result=$?; "
+            f"printf '%s\\n' \"$result\" > {shlex.quote(str(exit_status))}; "
+            "exit \"$result\""
+        )
+        with log.open("wb") as output:
+            process = subprocess.Popen(
+                ["bash", "-lc", shell_command],
+                stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+        metadata = {
+            "job": args.job, "project": project, "commit": args.commit,
+            "source_ref": source_ref, "dut_commit": dut_commit, "dut_clean": dut_clean,
+            "command": command, "created_at": time.time(), "pid": process.pid,
+            "state": "RUNNING", "worktree": str(worktree), "log": str(log),
+            "exit_status": str(exit_status),
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        print(json.dumps({
+            "job": args.job, "state": "RUNNING", "pid": process.pid,
+            "dut_commit": dut_commit, "dut_clean": dut_clean,
+        }, indent=2))
+        return
+
+    if not metadata_path.is_file():
+        fail(f"unknown job: {args.job}")
+    metadata = json.loads(metadata_path.read_text())
+    pid = metadata.get("pid")
+    if args.worker_action == "status":
+        refresh_state(metadata, metadata_path)
+        print(json.dumps(metadata, indent=2))
+    elif args.worker_action == "cancel":
+        if metadata.get("state") == "RUNNING" and isinstance(pid, int):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                metadata["state"] = "CANCELLED"
+            except ProcessLookupError:
+                metadata["state"] = "FINISHED"
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        print(json.dumps(metadata, indent=2))
+    elif args.worker_action == "log":
+        log = Path(metadata["log"])
+        if args.follow:
+            subprocess.run(["tail", "-n", "+1", "-f", str(log)], check=False)
+        else:
+            print(log.read_text(errors="replace"), end="")
+    elif args.worker_action == "artifacts":
+        entries = [str(path.relative_to(job_dir)) for path in job_dir.rglob("*") if path.is_file()]
+        print(json.dumps({"job": args.job, "files": entries}, indent=2))
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    sub = result.add_subparsers(dest="action", required=True)
+    sub.add_parser("remotes", help="list configured runners")
+    recommend = sub.add_parser("recommend", help="show eligible available runners for a profile")
+    recommend.add_argument("--profile", required=True)
+    submit = sub.add_parser("submit", help="submit a pushed branch, tag, or commit")
+    selection = submit.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--remote")
+    selection.add_argument("--best", action="store_true",
+                           help="choose the best eligible available remote")
+    submit.add_argument("--profile", required=True)
+    submit.add_argument(
+        "--ref", help="local branch, tag, or commit already reachable from origin (default: HEAD)",
+    )
+    prune = sub.add_parser("prune", help="preview or remove expired jobs")
+    prune.add_argument("--remote", required=True)
+    prune.add_argument("--success-days", type=float, default=7)
+    prune.add_argument("--failure-days", type=float, default=30)
+    prune.add_argument("--apply", action="store_true",
+                       help="remove previewed jobs; omission is a preview")
+    for name in ("status", "log", "artifacts", "cancel"):
+        item = sub.add_parser(name)
+        item.add_argument("job")
+        if name == "log":
+            item.add_argument("--follow", action="store_true")
+    return result
+
+
+def worker_parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(add_help=False)
+    result.add_argument("--worker", dest="worker_action", required=True,
+                        choices=("submit", "status", "log", "artifacts", "cancel", "prune", "availability"))
+    result.add_argument("--workspace-root", required=True)
+    result.add_argument("--max-jobs", type=int, required=True)
+    result.add_argument("--job")
+    result.add_argument("--project")
+    result.add_argument("--source-url")
+    result.add_argument("--source-ref")
+    result.add_argument("--commit")
+    result.add_argument("--command")
+    result.add_argument("--follow", action="store_true")
+    result.add_argument("--success-days", type=float, default=7)
+    result.add_argument("--failure-days", type=float, default=30)
+    result.add_argument("--apply", action="store_true")
+    return result
+
+
+if __name__ == "__main__":
+    if "--worker" in sys.argv:
+        worker(worker_parser().parse_args())
+    else:
+        controller(parser().parse_args())

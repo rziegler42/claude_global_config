@@ -1,0 +1,19 @@
+# Paths installed relative to ~/.claude. Keep this list explicit so runtime,
+# history, credentials, plugin caches, and other machine state are never copied.
+CLAUDE.md
+settings.json
+agents/graphify-semantic.md
+agents/implementer.md
+agents/safe-committer.md
+agents/technical-researcher.md
+agents/workflow-reviewer.md
+bin/claude-workflow
+bin/remote-runner
+skills/architecture-decisions/SKILL.md
+skills/graphify-workflow/SKILL.md
+skills/graphify-workflow/references/extraction-spec.md
+skills/graphify-workflow/scripts/finalize.py
+skills/graphify-workflow/scripts/post_commit.py
+skills/graphify-workflow/scripts/prepare.py
+skills/security-review/SKILL.md
+

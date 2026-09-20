@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""Deterministic Git and Graphify operations for the Claude workflow."""
+import argparse
+import difflib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+
+GRAPH_ID = re.compile(r"^[a-z0-9_]+$")
+GRAPH_FILE_TYPES = {"code", "document", "paper", "image", "rationale", "concept"}
+GRAPH_SCORES = {"EXTRACTED": {1.0}, "INFERRED": {0.95, 0.85, 0.75, 0.65, 0.55}}
+SEMANTIC_EXTENSIONS = {
+    ".md", ".mdx", ".qmd", ".skill", ".txt", ".rst", ".html", ".yaml", ".yml",
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".docx", ".xlsx",
+    ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mp3", ".wav", ".m4a", ".ogg",
+}
+
+
+def emit(status, **details):
+    print(json.dumps({"status": status, **details}, ensure_ascii=False))
+
+
+def run(argv, cwd, check=True):
+    result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+    if check and result.returncode:
+        detail = (result.stderr or result.stdout or "command failed").strip()[-1000:]
+        raise RuntimeError(f"{argv[0]} failed ({result.returncode}): {detail}")
+    return result
+
+
+def git_root(path):
+    result = run(["git", "rev-parse", "--show-toplevel"], path)
+    return Path(result.stdout.strip()).resolve()
+
+
+def head(root):
+    return run(["git", "rev-parse", "HEAD"], root).stdout.strip()
+
+
+def subject(root):
+    return run(["git", "show", "-s", "--format=%s", "HEAD"], root).stdout.rstrip("\n")
+
+
+def names(root, cached=False):
+    command = ["git", "diff"]
+    if cached:
+        command.append("--cached")
+    command.extend(["--name-only", "-z"])
+    return {item for item in run(command, root).stdout.split("\0") if item}
+
+
+def validate_subject(value):
+    if not value or "\n" in value or "\r" in value or "\0" in value:
+        raise ValueError("subject must be one non-empty line")
+
+
+def validate_paths(root, paths):
+    if not paths:
+        raise ValueError("at least one exact path is required")
+    validated = []
+    for raw in paths:
+        if raw in {".", ".."} or Path(raw).is_absolute() or any(c in raw for c in "*?[]"):
+            raise ValueError(f"unsafe or non-exact path: {raw}")
+        resolved = (root / raw).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"path escapes repository: {raw}") from exc
+        if resolved.is_dir():
+            raise ValueError(f"directories are not eligible: {raw}")
+        tracked = run(["git", "ls-files", "--error-unmatch", "--", raw], root, check=False).returncode == 0
+        if not resolved.exists() and not tracked:
+            raise ValueError(f"path does not exist and is not tracked: {raw}")
+        validated.append(Path(raw).as_posix())
+    return validated
+
+
+def graph_script(name):
+    path = Path.home() / ".claude" / "skills" / "graphify-workflow" / "scripts" / name
+    if not path.is_file():
+        raise RuntimeError(f"Graphify workflow script missing: {path}")
+    return path
+
+
+def changed_paths(root, base):
+    result = run(["git", "diff", "--name-only", "-z", base, "HEAD"], root, check=False)
+    return {item for item in result.stdout.split("\0") if item} if result.returncode == 0 else set()
+
+
+def dirty_paths(root):
+    result = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], root, check=False)
+    paths = set()
+    if result.returncode == 0:
+        for item in result.stdout.split("\0"):
+            if item:
+                paths.add(item[3:] if len(item) > 3 else item)
+    return {path for path in paths if not path.startswith("graphify-out/")}
+
+
+def graph_status_details(root):
+    graph = root / "graphify-out" / "graph.json"
+    if not graph.is_file():
+        return {"status": "missing", "graph": str(graph)}
+    refresh = root / "graphify-out" / ".claude_refresh.json"
+    if refresh.is_file():
+        try:
+            state = json.loads(refresh.read_text(encoding="utf-8"))
+            if state.get("status") == "prepared":
+                return {"status": "refresh_in_progress", "graph": str(graph)}
+        except (OSError, ValueError):
+            pass
+    metadata = root / "graphify-out" / ".claude_graph_state.json"
+    if not metadata.is_file():
+        return {"status": "present", "graph": str(graph), "warning": "freshness metadata missing"}
+    try:
+        state = json.loads(metadata.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"status": "present", "graph": str(graph), "warning": "freshness metadata invalid"}
+    paths = dirty_paths(root)
+    recorded_head = state.get("head")
+    if recorded_head and recorded_head != head(root):
+        paths.update(changed_paths(root, recorded_head))
+    semantic = sorted(path for path in paths if Path(path).suffix.lower() in SEMANTIC_EXTENSIONS)
+    if semantic:
+        return {"status": "stale_semantic", "graph": str(graph), "changed": semantic[:20]}
+    if paths or recorded_head != head(root):
+        return {"status": "stale_code", "graph": str(graph), "changed": sorted(paths)[:20]}
+    return {"status": "current", "graph": str(graph), "head": recorded_head,
+            "generated_at": state.get("generated_at"), "graphify_version": state.get("graphify_version")}
+
+
+def graph_status(root):
+    details = graph_status_details(root)
+    status = details.pop("status")
+    emit(status, **details)
+
+
+def graph_warning(root):
+    details = graph_status_details(root)
+    if details["status"] != "current":
+        print(json.dumps({"graph_warning": details}, ensure_ascii=False))
+
+
+def project_id(root):
+    remote = run(["git", "remote", "get-url", "origin"], root, check=False).stdout.strip()
+    if remote:
+        normalized = re.sub(r"^git@([^:]+):", r"https://\1/", remote)
+        normalized = re.sub(r"\.git$", "", normalized.rstrip("/"))
+        emit("verified", project_id=normalized, source="origin")
+        return
+    initial = run(["git", "rev-list", "--max-parents=0", "HEAD"], root).stdout.splitlines()[0]
+    emit("verified", project_id=f"{root.name}@{initial[:12]}", source="root_commit")
+
+
+def project_identity(root):
+    remote = run(["git", "remote", "get-url", "origin"], root, check=False).stdout.strip()
+    if remote:
+        normalized = re.sub(r"^git@([^:]+):", r"https://\1/", remote)
+        return re.sub(r"\.git$", "", normalized.rstrip("/")), "origin"
+    initial = run(["git", "rev-list", "--max-parents=0", "HEAD"], root).stdout.splitlines()[0]
+    return f"{root.name}@{initial[:12]}", "root_commit"
+
+
+def workflow_context(root):
+    identity, identity_source = project_identity(root)
+    branch = run(["git", "branch", "--show-current"], root, check=False).stdout.strip()
+    graph = graph_status_details(root)
+    plans = root / "docs" / "plans" / "next.md"
+    plans_readme = root / "docs" / "plans" / "README.md"
+    legacy_plans = root / "docs" / "plans" / "notes.md"
+    decisions = root / "docs" / "decisions" / "README.md"
+    development = root / "docs" / "development.md"
+    plan_text = plans.read_text(encoding="utf-8") if plans.is_file() else ""
+    uses_checkboxes = "- [ ]" in plan_text or "- [x]" in plan_text.lower()
+    emit(
+        "context",
+        project_id=identity,
+        project_id_source=identity_source,
+        branch=branch or None,
+        dirty_paths=sorted(dirty_paths(root)),
+        graphify=graph,
+        guidance="AGENTS.md" if (root / "AGENTS.md").is_file() else None,
+        decisions_index="docs/decisions/README.md" if decisions.is_file() else None,
+        next_plan="docs/plans/next.md" if plans.is_file() else None,
+        next_plan_has_unfinished=("- [ ]" in plan_text) if uses_checkboxes else None,
+        plans_readme="docs/plans/README.md" if plans_readme.is_file() else None,
+        legacy_plans="docs/plans/notes.md" if legacy_plans.is_file() else None,
+        development="docs/development.md" if development.is_file() else None,
+    )
+
+
+def graph_prepare(root, deep=False):
+    spec = graph_script("../references/extraction-spec.md").resolve()
+    command = [sys.executable, str(graph_script("prepare.py")), str(root), "--spec", str(spec)]
+    if deep:
+        command.append("--deep")
+    result = run(command, root)
+    print(result.stdout.rstrip())
+
+
+def graph_finalize(root):
+    spec = graph_script("../references/extraction-spec.md").resolve()
+    result = run([sys.executable, str(graph_script("finalize.py")), str(root), "--spec", str(spec)], root)
+    print(result.stdout.rstrip())
+
+
+def graph_post_commit(root):
+    result = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root)
+    print(result.stdout.rstrip())
+
+
+def graph_file(root):
+    graph = root / "graphify-out" / "graph.json"
+    if not graph.is_file():
+        raise RuntimeError(f"Graphify graph missing: {graph}")
+    return graph
+
+
+def graphify_read(root, arguments):
+    graph_warning(root)
+    executable = shutil.which("graphify")
+    if not executable:
+        raise RuntimeError("Graphify executable not found")
+    result = run([executable, *arguments], root)
+    print(result.stdout.rstrip())
+
+
+def graph_query(root, args):
+    command = ["query", args.question, "--graph", str(graph_file(root)), "--budget", str(args.budget)]
+    if args.dfs:
+        command.append("--dfs")
+    for context in args.context:
+        command.extend(["--context", context])
+    graphify_read(root, command)
+
+
+def graph_path(root, args):
+    graphify_read(root, ["path", args.source, args.target, "--graph", str(graph_file(root))])
+
+
+def graph_explain(root, args):
+    graphify_read(root, ["explain", args.node, "--graph", str(graph_file(root))])
+
+
+def graph_affected(root, args):
+    command = ["affected", args.node, "--graph", str(graph_file(root)), "--depth", str(args.depth)]
+    for relation in args.relation:
+        command.extend(["--relation", relation])
+    graphify_read(root, command)
+
+
+def graph_god_nodes(root, args):
+    command = ["god-nodes", "--graph", str(graph_file(root)), "--top", str(args.top)]
+    if args.json:
+        command.append("--json")
+    graphify_read(root, command)
+
+
+def graph_diagnose(root, args):
+    command = [
+        "diagnose", "multigraph", "--graph", str(graph_file(root)),
+        "--max-examples", str(args.max_examples),
+    ]
+    if args.json:
+        command.append("--json")
+    graphify_read(root, command)
+
+
+def graph_benchmark(root):
+    graphify_read(root, ["benchmark", str(graph_file(root))])
+
+
+def graph_validate_chunk(root, raw_path):
+    if not re.fullmatch(r"graphify-out/\.graphify_chunk_[0-9]+\.json", raw_path):
+        raise ValueError("chunk must be an exact project-relative graphify-out/.graphify_chunk_NN.json path")
+    path = (root / raw_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("chunk path escapes repository") from exc
+    if not path.is_file():
+        raise ValueError(f"chunk file missing: {raw_path}")
+    try:
+        with path.open(encoding="utf-8") as stream:
+            data = json.load(stream)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError("chunk root must be a JSON object")
+    for key in ("nodes", "edges", "hyperedges"):
+        if not isinstance(data.get(key), list):
+            raise ValueError(f"chunk field {key!r} must be an array")
+
+    manifest = json.loads((root / "graphify-out" / ".graphify_chunks.json").read_text(encoding="utf-8"))
+    assigned = next(
+        (chunk for chunk in manifest.get("chunks", []) if chunk.get("output") == raw_path),
+        None,
+    )
+    if assigned is None:
+        raise ValueError("chunk is not assigned by the current prepared manifest")
+    allowed_sources = set(assigned.get("files", []))
+
+    node_ids = set()
+    for index, node in enumerate(data["nodes"]):
+        if not isinstance(node, dict):
+            raise ValueError(f"node {index} must be an object")
+        node_id = str(node.get("id", ""))
+        if not GRAPH_ID.fullmatch(node_id):
+            raise ValueError(f"node {index} has invalid id: {node_id!r}")
+        if not str(node.get("label", "")).strip():
+            raise ValueError(f"node {node_id!r} has an empty label")
+        if node.get("file_type") not in GRAPH_FILE_TYPES:
+            raise ValueError(f"node {node_id!r} has invalid file_type")
+        if node.get("source_file") not in allowed_sources:
+            raise ValueError(f"node {node_id!r} is outside the assigned source scope")
+        node_ids.add(node_id)
+
+    for index, edge in enumerate(data["edges"]):
+        if not isinstance(edge, dict):
+            raise ValueError(f"edge {index} must be an object")
+        confidence, score = edge.get("confidence"), edge.get("confidence_score")
+        if edge.get("source_file") not in allowed_sources:
+            raise ValueError(f"edge {index} is outside the assigned source scope")
+        if not str(edge.get("relation", "")).strip() or not edge.get("source") or not edge.get("target"):
+            raise ValueError(f"edge {index} is missing source, target, or relation")
+        if confidence not in {"EXTRACTED", "INFERRED", "AMBIGUOUS"}:
+            raise ValueError(f"edge {index} has invalid confidence")
+        if not isinstance(score, (int, float)):
+            raise ValueError(f"edge {index} has invalid confidence_score")
+        if confidence in GRAPH_SCORES and score not in GRAPH_SCORES[confidence]:
+            raise ValueError(f"edge {index} has unsupported {confidence} confidence_score")
+        if confidence == "AMBIGUOUS" and not 0.1 <= score <= 0.3:
+            raise ValueError(f"edge {index} has unsupported AMBIGUOUS confidence_score")
+
+    for index, hyperedge in enumerate(data["hyperedges"]):
+        if not isinstance(hyperedge, dict):
+            raise ValueError(f"hyperedge {index} must be an object")
+        if hyperedge.get("source_file") not in allowed_sources:
+            raise ValueError(f"hyperedge {index} is outside the assigned source scope")
+        if not str(hyperedge.get("relation", "")).strip() or len(hyperedge.get("nodes", [])) < 3:
+            raise ValueError(f"hyperedge {index} requires a relation and at least three nodes")
+
+    ast = json.loads((root / "graphify-out" / ".graphify_ast.json").read_text(encoding="utf-8"))
+    cached = json.loads((root / "graphify-out" / ".graphify_cached.json").read_text(encoding="utf-8"))
+    external_ids = {
+        node["id"]
+        for source in (ast, cached)
+        for node in source.get("nodes", [])
+        if isinstance(node, dict) and "id" in node
+    }
+    known_ids = node_ids | external_ids
+    cached_ids = external_ids
+    dangling_cached_edges = [
+        edge for edge in cached.get("edges", [])
+        if edge.get("source") not in cached_ids or edge.get("target") not in cached_ids
+    ]
+    dangling_cached_hyperedges = [
+        edge for edge in cached.get("hyperedges", [])
+        if any(node not in cached_ids for node in edge.get("nodes", []))
+    ]
+    if dangling_cached_edges or dangling_cached_hyperedges:
+        raise ValueError(
+            "prepared semantic cache has dangling endpoints; rerun graph-prepare with the current workflow: "
+            f"{len(dangling_cached_edges)} edges, {len(dangling_cached_hyperedges)} hyperedges"
+        )
+    dangling_edges = [
+        edge for edge in data["edges"]
+        if edge.get("source") not in known_ids or edge.get("target") not in known_ids
+    ]
+    dangling_hyperedges = [
+        edge for edge in data["hyperedges"]
+        if any(node not in known_ids for node in edge.get("nodes", []))
+    ]
+    if dangling_edges or dangling_hyperedges:
+        unknown = sorted({
+            endpoint
+            for edge in dangling_edges
+            for endpoint in (edge.get("source"), edge.get("target"))
+            if endpoint not in known_ids
+        } | {
+            endpoint
+            for edge in dangling_hyperedges
+            for endpoint in edge.get("nodes", [])
+            if endpoint not in known_ids
+        })
+        examples = unknown[:8]
+        suggestions = {
+            endpoint: difflib.get_close_matches(endpoint, known_ids, n=3, cutoff=0.6)
+            for endpoint in examples
+        }
+        raise ValueError(
+            "dangling semantic endpoints: "
+            f"{len(dangling_edges)} edges, {len(dangling_hyperedges)} hyperedges; "
+            f"unknown={examples!r}; suggestions={suggestions!r}; "
+            f"edge_examples={dangling_edges[:3]!r}; hyperedge_examples={dangling_hyperedges[:2]!r}"
+        )
+    emit(
+        "valid",
+        chunk=raw_path,
+        nodes=len(data["nodes"]),
+        edges=len(data["edges"]),
+        hyperedges=len(data["hyperedges"]),
+    )
+
+
+def commit(args):
+    root = git_root(Path.cwd())
+    validate_subject(args.subject)
+    if head(root) != args.expected_head:
+        raise RuntimeError("HEAD changed; refusing commit")
+    if names(root, cached=True):
+        raise RuntimeError("index is not empty; refusing to alter pre-existing staged work")
+    normalized = validate_paths(root, args.paths)
+    eligible = set(normalized)
+    run(["git", "diff", "--check"], root)
+    try:
+        run(["git", "add", "--", *normalized], root)
+        staged = names(root, cached=True)
+        if not staged or staged != eligible:
+            raise RuntimeError(f"staged paths differ from eligible paths: {sorted(staged)}")
+        run(["git", "diff", "--cached", "--check"], root)
+        result = run(["git", "commit", "-m", args.subject], root)
+    except Exception:
+        if head(root) == args.expected_head:
+            run(["git", "reset", "--mixed", "HEAD", "--", *normalized], root, check=False)
+        raise
+    actual = subject(root)
+    if actual != args.subject:
+        raise RuntimeError(f"commit subject mismatch: {actual!r}")
+    post = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root, check=False)
+    try:
+        graphify_result = json.loads(post.stdout.strip())
+    except (TypeError, ValueError):
+        graphify_result = {"graphify_post_commit": "failed", "detail":
+                           (post.stdout.strip() or post.stderr.strip() or "no result")[-500:]}
+    emit("committed", commit=head(root), subject=actual, paths=sorted(staged),
+         hook_output=result.stdout.strip()[-500:], graphify=graphify_result)
+
+
+def amend(args):
+    root = git_root(Path.cwd())
+    validate_subject(args.subject)
+    old_hash, old_subject = head(root), subject(root)
+    if old_hash != args.expected_head:
+        raise RuntimeError("HEAD changed; refusing amend")
+    if names(root, cached=True):
+        raise RuntimeError("index is not empty; refusing content-changing amend")
+    run(["git", "commit", "--amend", "-m", args.subject], root)
+    actual = subject(root)
+    if actual != args.subject:
+        raise RuntimeError(f"amended subject mismatch: {actual!r}")
+    emit("amended", old_commit=old_hash, new_commit=head(root), old_subject=old_subject, subject=actual)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    commit_p = sub.add_parser("commit")
+    commit_p.add_argument("--expected-head", required=True)
+    commit_p.add_argument("--subject", required=True)
+    commit_p.add_argument("paths", nargs="+")
+    amend_p = sub.add_parser("amend-message")
+    amend_p.add_argument("--expected-head", required=True)
+    amend_p.add_argument("--subject", required=True)
+    for name in ("context", "project-id", "graph-status", "graph-prepare", "graph-finalize", "graph-post-commit"):
+        item = sub.add_parser(name)
+        item.add_argument("root", nargs="?", default=".")
+        if name == "graph-prepare":
+            item.add_argument("--deep", action="store_true")
+    query_p = sub.add_parser("graph-query")
+    query_p.add_argument("question")
+    query_p.add_argument("--root", default=".")
+    query_p.add_argument("--budget", type=int, default=2000)
+    query_p.add_argument("--context", action="append", default=[])
+    query_p.add_argument("--dfs", action="store_true")
+    path_p = sub.add_parser("graph-path")
+    path_p.add_argument("source")
+    path_p.add_argument("target")
+    path_p.add_argument("--root", default=".")
+    explain_p = sub.add_parser("graph-explain")
+    explain_p.add_argument("node")
+    explain_p.add_argument("--root", default=".")
+    affected_p = sub.add_parser("graph-affected")
+    affected_p.add_argument("node")
+    affected_p.add_argument("--root", default=".")
+    affected_p.add_argument("--relation", action="append", default=[])
+    affected_p.add_argument("--depth", type=int, default=2)
+    god_p = sub.add_parser("graph-god-nodes")
+    god_p.add_argument("--root", default=".")
+    god_p.add_argument("--top", type=int, default=10)
+    god_p.add_argument("--json", action="store_true")
+    diagnose_p = sub.add_parser("graph-diagnose")
+    diagnose_p.add_argument("--root", default=".")
+    diagnose_p.add_argument("--max-examples", type=int, default=5)
+    diagnose_p.add_argument("--json", action="store_true")
+    benchmark_p = sub.add_parser("graph-benchmark")
+    benchmark_p.add_argument("--root", default=".")
+    validate_p = sub.add_parser("graph-validate-chunk")
+    validate_p.add_argument("chunk")
+    args = parser.parse_args()
+    if args.command == "commit": commit(args)
+    elif args.command == "amend-message": amend(args)
+    elif args.command == "graph-validate-chunk":
+        graph_validate_chunk(git_root(Path.cwd()), args.chunk)
+    else:
+        root = git_root(Path(args.root))
+        if args.command == "context": workflow_context(root)
+        elif args.command == "project-id": project_id(root)
+        elif args.command == "graph-status": graph_status(root)
+        elif args.command == "graph-prepare": graph_prepare(root, args.deep)
+        elif args.command == "graph-finalize": graph_finalize(root)
+        elif args.command == "graph-post-commit": graph_post_commit(root)
+        elif args.command == "graph-query": graph_query(root, args)
+        elif args.command == "graph-path": graph_path(root, args)
+        elif args.command == "graph-explain": graph_explain(root, args)
+        elif args.command == "graph-affected": graph_affected(root, args)
+        elif args.command == "graph-god-nodes": graph_god_nodes(root, args)
+        elif args.command == "graph-diagnose": graph_diagnose(root, args)
+        else: graph_benchmark(root)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, ValueError) as exc:
+        emit("failed", error=str(exc))
+        raise SystemExit(1)
