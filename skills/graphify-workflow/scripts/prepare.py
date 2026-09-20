@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare deterministic Graphify extraction and Claude semantic chunks."""
 import argparse
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -37,6 +38,37 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def source_record(path):
+    source = Path(path)
+    digest = hashlib.sha256()
+    with source.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return {
+        "source_file": str(source),
+        "size_bytes": source.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def chunk_sources(paths, max_files, max_bytes):
+    groups, current, current_bytes = [], [], 0
+    for path in paths:
+        record = source_record(path)
+        size = record["size_bytes"]
+        if current and (len(current) >= max_files or current_bytes + size > max_bytes):
+            groups.append(current)
+            current, current_bytes = [], 0
+        current.append(record)
+        current_bytes += size
+        if size >= max_bytes:
+            groups.append(current)
+            current, current_bytes = [], 0
+    if current:
+        groups.append(current)
+    return groups
+
+
 def prune_dangling_cached(ast, nodes, edges, hyperedges):
     identifiers = {node["id"] for node in ast.get("nodes", [])}.union(
         node["id"] for node in nodes
@@ -59,7 +91,10 @@ def main():
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--deep", action="store_true")
     parser.add_argument("--chunk-size", type=int, default=22)
+    parser.add_argument("--chunk-bytes", type=int, default=300_000)
     args = parser.parse_args()
+    if args.chunk_size < 1 or args.chunk_bytes < 1:
+        raise SystemExit("chunk-size and chunk-bytes must be positive")
     root = args.project_root.resolve()
     out = (root / args.out).resolve()
     spec = args.spec.resolve()
@@ -83,17 +118,19 @@ def main():
     write_json(out / ".graphify_cached.json", {"nodes": cached_n, "edges": cached_e, "hyperedges": cached_h})
     images = {str(Path(p).resolve()) for p in detected.get("files", {}).get("image", [])}
     normal = sorted((p for p in uncached if p not in images), key=lambda p: (str(Path(p).parent), p))
-    groups = [normal[i:i + args.chunk_size] for i in range(0, len(normal), args.chunk_size)]
-    groups.extend([[p] for p in sorted(images.intersection(uncached))])
+    groups = chunk_sources(normal, args.chunk_size, args.chunk_bytes)
+    groups.extend([[source_record(p)] for p in sorted(images.intersection(uncached))])
     chunks = []
-    for i, files in enumerate(groups, 1):
+    for i, sources in enumerate(groups, 1):
         filename = f".graphify_chunk_{i:02d}.json"
         output = out / filename
         output.unlink(missing_ok=True)
         chunks.append({
             "number": i,
             "total": len(groups),
-            "files": files,
+            "files": [source["source_file"] for source in sources],
+            "sources": sources,
+            "size_bytes": sum(source["size_bytes"] for source in sources),
             "output": str(Path(args.out) / filename),
             "deep": args.deep,
         })

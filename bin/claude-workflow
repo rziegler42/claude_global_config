@@ -2,6 +2,7 @@
 """Deterministic Git and Graphify operations for the Claude workflow."""
 import argparse
 import difflib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -306,6 +307,50 @@ def graph_validate_chunk(root, raw_path):
     if assigned is None:
         raise ValueError("chunk is not assigned by the current prepared manifest")
     allowed_sources = set(assigned.get("files", []))
+    expected_sources = {
+        item.get("source_file"): item
+        for item in assigned.get("sources", [])
+        if isinstance(item, dict) and isinstance(item.get("source_file"), str)
+    }
+    if set(expected_sources) != allowed_sources:
+        raise ValueError("prepared chunk is missing exact source metadata; rerun graph-prepare")
+
+    coverage = data.get("coverage")
+    if not isinstance(coverage, list) or len(coverage) != len(expected_sources):
+        raise ValueError(
+            f"coverage must contain exactly {len(expected_sources)} prepared source receipts"
+        )
+    receipts = {}
+    for index, item in enumerate(coverage):
+        if not isinstance(item, dict):
+            raise ValueError(f"coverage entry {index} must be an object")
+        source = item.get("source_file")
+        if source not in expected_sources:
+            raise ValueError(f"coverage entry {index} is outside the assigned source scope")
+        if source in receipts:
+            raise ValueError(f"coverage contains duplicate source: {source}")
+        if item.get("status") != "read_complete":
+            raise ValueError(f"coverage entry {index} is not marked read_complete")
+        expected_digest = expected_sources[source].get("sha256")
+        if item.get("sha256") != expected_digest:
+            raise ValueError(f"coverage entry {index} has the wrong prepared digest")
+        receipts[source] = item
+    missing_receipts = sorted(allowed_sources - set(receipts))
+    if missing_receipts:
+        raise ValueError(f"coverage is missing assigned sources: {missing_receipts}")
+
+    for source, record in expected_sources.items():
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise ValueError(f"assigned source is missing after preparation: {source}")
+        if source_path.stat().st_size != record.get("size_bytes"):
+            raise ValueError(f"assigned source size changed after preparation: {source}")
+        digest = hashlib.sha256()
+        with source_path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != record.get("sha256"):
+            raise ValueError(f"assigned source content changed after preparation: {source}")
 
     node_ids = set()
     for index, node in enumerate(data["nodes"]):

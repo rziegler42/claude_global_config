@@ -148,6 +148,15 @@ The helper expects the `graphify` executable on `PATH`. Graph output is written
 inside the target project under `graphify-out/` and should normally remain
 untracked.
 
+Semantic refreshes group ordinary sources by both file count and total byte
+size, while exceptionally large sources receive their own chunk. Each semantic
+worker must read every assigned source through EOF before writing, and its chunk
+contains exact source/digest coverage receipts checked against the prepared
+manifest. The parent accepts only an explicit completion handoff and treats the
+validator's counts as authoritative. These checks detect missing, stale, or
+partial coverage declarations; they do not prove the quality or completeness of
+the worker's semantic interpretation.
+
 ## Optional remote runner
 
 `remote-runner` needs Python 3, Git, SSH, and access to the project's Git

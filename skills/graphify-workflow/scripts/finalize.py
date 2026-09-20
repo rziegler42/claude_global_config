@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate and merge Claude semantic chunks into Graphify extraction JSON."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -44,9 +45,38 @@ def load(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def valid(data, allowed):
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def valid(data, allowed, expected_sources):
     if not isinstance(data, dict) or not all(isinstance(data.get(k), list) for k in EMPTY):
         return False
+    coverage = data.get("coverage")
+    if not isinstance(coverage, list) or len(coverage) != len(expected_sources):
+        return False
+    receipts = {}
+    for item in coverage:
+        if not isinstance(item, dict) or item.get("status") != "read_complete":
+            return False
+        source = item.get("source_file")
+        if source in receipts or source not in expected_sources:
+            return False
+        if item.get("sha256") != expected_sources[source]["sha256"]:
+            return False
+        receipts[source] = item
+    if set(receipts) != set(expected_sources):
+        return False
+    for source, record in expected_sources.items():
+        path = Path(source)
+        if not path.is_file() or path.stat().st_size != record["size_bytes"]:
+            return False
+        if file_sha256(path) != record["sha256"]:
+            return False
     node_ids = set()
     for node in data["nodes"]:
         if (not isinstance(node, dict) or not ID.fullmatch(str(node.get("id", "")))
@@ -105,14 +135,19 @@ def main():
         path, allowed = Path(chunk["output"]), set(chunk["files"])
         try:
             data = load(path)
-            if not valid(data, allowed):
-                raise ValueError("schema or source scope")
+            expected_sources = {item["source_file"]: item for item in chunk.get("sources", [])}
+            if set(expected_sources) != allowed:
+                raise ValueError("prepared source metadata")
+            if not valid(data, allowed, expected_sources):
+                raise ValueError("schema, source scope, or coverage")
             good.append(data)
             sources.extend(chunk["files"])
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             failed.append({"chunk": chunk["number"], "error": str(exc)})
-    if manifest["chunks"] and len(failed) > len(manifest["chunks"]) / 2:
-        raise SystemExit(f"refusing merge: {len(failed)} of {len(manifest['chunks'])} chunks failed")
+    if failed:
+        raise SystemExit(
+            f"refusing merge: {len(failed)} of {len(manifest['chunks'])} chunks failed: {failed}"
+        )
     fresh = merge(good)
     ast = load(out / ".graphify_ast.json")
     cached = load(out / ".graphify_cached.json")

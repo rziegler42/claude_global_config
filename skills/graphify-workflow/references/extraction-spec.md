@@ -6,7 +6,13 @@ Write only the exact assigned chunk path as JSON, with no prose or Markdown.
 
 Schema:
 
-`{"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0}`
+`{"coverage":[],"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0}`
+
+`coverage` must contain exactly one entry for every assigned file and no other
+file: `{"source_file":"<exact assigned absolute path>","sha256":"<exact
+manifest digest>","status":"read_complete"}`. Add an entry only after reading
+that source through EOF. Never write a partial chunk to preserve progress; if
+any source is incomplete, report the incomplete paths without writing output.
 
 Each node requires `id`, `label`, `file_type`, and `source_file`. `file_type` is one of `code`, `document`, `paper`, `image`, `rationale`, or `concept`. IDs are lowercase `[a-z0-9_]`, derived deterministically from the full repository-relative source path plus entity name; never add chunk or sequence suffixes.
 
