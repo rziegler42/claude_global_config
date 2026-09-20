@@ -42,7 +42,10 @@ changes with known file scope.
 ## Query
 
 From the repository root, run `claude-workflow graph-status`. Treat anything
-except `current` as potentially stale. Start with exactly one focused operation:
+except `current` as potentially stale. Ask about one relationship anchored on
+one component, symbol, document, or decision at a time. Do not combine
+ownership, dependencies, implementation files, tests, plans, and ADRs into one
+compound question. Start with exactly one focused operation:
 
 - impact: `claude-workflow graph-affected "<node>"`
 - component: `claude-workflow graph-explain "<node>"`
@@ -50,11 +53,30 @@ except `current` as potentially stale. Start with exactly one focused operation:
 - broad orientation: `claude-workflow graph-query "<question>"`
 - diagnostics: `claude-workflow graph-diagnose`
 
+Prefer `graph-explain` for ownership or component context, `graph-affected` for
+dependents or impact, and `graph-path` for a relationship between two known
+nodes. Use `graph-query` only for broad orientation when the correct anchor is
+not yet known.
+
 Use a second graph call only when the first exposes a material unresolved
-relationship. If a result is truncated, narrow the second call or use an
-explain/affected/path operation, then verify selected relationships against
-repository files. A stale graph is discovery evidence, not current truth;
-refresh first only when current relationships materially affect the answer.
+relationship. The normal one-query limit permits one automatic narrowing
+follow-up after a truncated result. Treat `[!] TRUNCATED` as incomplete output,
+not an error and not sufficient evidence for a conclusion:
+
+1. Do not answer from the partial traversal alone.
+2. Select one specific returned node as the next anchor.
+3. Narrow with `graph-explain`, `graph-affected`, or `graph-path`.
+4. Increase `graph-query --budget` only if that narrowed query still truncates.
+
+Keep the default 2,000-token budget; do not compensate for a compound query by
+raising it first. Never pipe Graphify output through `head`, `tail`, `cut`, or
+another output-clipping command because that can silently hide relationships or
+the truncation warning. If the narrowed follow-up remains truncated, state that
+limitation and independently verify every reported conclusion against current
+repository files.
+
+A stale graph is discovery evidence, not current truth; refresh first only when
+current relationships materially affect the answer.
 
 Never invoke vendor Graphify commands directly, inspect their help, select an
 external LLM backend, use backend auto-detection, or install hooks.

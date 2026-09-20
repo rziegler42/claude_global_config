@@ -148,6 +148,15 @@ The helper expects the `graphify` executable on `PATH`. Graph output is written
 inside the target project under `graphify-out/` and should normally remain
 untracked.
 
+For queries, use one anchor and one relationship at a time. Prefer
+`graph-explain` for component context, `graph-affected` for impact, and
+`graph-path` between two known nodes; reserve `graph-query` for orientation when
+the anchor is unknown. A `[!] TRUNCATED` result is incomplete rather than
+failed: narrow to a returned node before raising the default 2,000-token budget,
+and do not clip Graphify output with `head`, `tail`, or `cut`. One automatic
+narrowing follow-up is allowed after truncation, and conclusions still require
+verification against current repository files.
+
 Semantic refreshes group ordinary sources by both file count and total byte
 size, while exceptionally large sources receive their own chunk. Each semantic
 worker must read every assigned source through EOF before writing, and its chunk
