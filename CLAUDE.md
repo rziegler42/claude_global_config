@@ -2,12 +2,12 @@
 
 ## Configuration sources
 
-- Treat `~/projects/claude_global_config` as the tracked mirror of this global
-  Claude configuration. When changing portable global policy, agents, helpers,
-  settings, or personal skills, update both that repository and `~/.claude`.
-- Treat `~/projects/claude_project_template` as the default source for project
-  template work. Do not use the legacy `~/.config/opencode/project-template`
-  location unless the user explicitly requests it.
+- Treat the tracked `claude_global_config` repository as the mirror of this
+  global Claude configuration. When changing portable global policy, agents,
+  helpers, settings, or personal skills, update both that repository and
+  `~/.claude`.
+- Treat the tracked `claude_project_template` repository as the default source
+  for project template work.
 - Never mirror generated or private Claude state such as sessions, history,
   caches, backups, authentication data, remote-host configuration, plugin
   payloads, or machine-specific runtime state.
@@ -115,7 +115,7 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   only when its `remote-runner status` records `dut_commit` equal to the
   submitted commit and `dut_clean: true`. Never run a verification command in a
   pre-existing remote checkout, rely on its apparent branch name, or compare a
-  remote result against uncommitted Mac files. If the remote DUT provenance is
+  remote result against uncommitted local files. If the remote DUT provenance is
   absent or mismatched, stop and resubmit through `remote-runner`; do not
   describe the result as a test of the intended change.
 - For an approved long test of uncommitted work, prefer a temporary pushed WIP
@@ -255,4 +255,5 @@ When memory is irrelevant or the storage boundary is unclear, do not recall or w
 
 Keep shared, committed guidance tool-neutral in `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, and `docs/`. Keep personal Claude configuration under `~/.claude/` and built-in auto-memory in Claude Code's project-scoped memory storage.
 
-Assume macOS or Linux, Git, POSIX `sh`, and `python3` unless the repository or user says otherwise.
+Follow repository-declared platform requirements. Otherwise assume Git, POSIX
+`sh`, and `python3` unless the user says otherwise.

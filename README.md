@@ -26,7 +26,7 @@ downloads, synced skills, or other generated and machine-specific state.
 
 Required:
 
-- macOS or Linux
+- A POSIX-compatible environment
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - Git
 - Python 3.11 or newer (`remote-runner` uses the standard-library `tomllib`)
@@ -54,7 +54,8 @@ Set `CLAUDE_CONFIG_DIR` or `LOCAL_BIN_DIR` to test or install in alternate
 locations:
 
 ```sh
-CLAUDE_CONFIG_DIR=/tmp/claude-test LOCAL_BIN_DIR=/tmp/claude-bin ./install.sh
+test_root=$(mktemp -d)
+CLAUDE_CONFIG_DIR="$test_root/.claude" LOCAL_BIN_DIR="$test_root/bin" ./install.sh
 ```
 
 ## Updating an installed configuration
@@ -64,11 +65,10 @@ idempotent: it skips matching files, installs changed files, and backs up every
 differing destination before replacement. A separate `--update` option is not
 needed.
 
-Before pulling, check whether the working `~/.claude` files have local changes
-that have not been mirrored:
+Before pulling, check from the repository root whether the working `~/.claude`
+files have local changes that have not been mirrored:
 
 ```sh
-cd ~/projects/claude_global_config
 ./install.sh --check
 ```
 
@@ -77,10 +77,9 @@ nonzero result prints each differing path as `DIFF <path>`. Review and preserve
 intentional live-only edits before continuing; otherwise a later install will
 replace them, although the previous versions will be backed up.
 
-For a normal repository-first update:
+For a normal repository-first update, run from the repository root:
 
 ```sh
-cd ~/projects/claude_global_config
 ./install.sh --check
 git pull --ff-only
 ./install.sh --dry-run
@@ -198,17 +197,17 @@ cpu_cores = 16
 memory_gib = 64
 labels = ["build", "test", "formal"]
 
-[remotes.macmini]
-ssh_host = "ci-user@macmini.example.net"
-workspace_root = "/Users/ci-user/runner-workspaces"
+[remotes.platform-builder]
+ssh_host = "ci-user@platform-builder.example.net"
+workspace_root = "~/runner-workspaces"
 max_jobs = 1
 
-[remotes.macmini.capabilities]
+[remotes.platform-builder.capabilities]
 os = "macos"
 arch = "arm64"
 cpu_cores = 10
 memory_gib = 32
-labels = ["build", "macos"]
+labels = ["build", "platform-build"]
 ```
 
 Each `[remotes.<name>]` table requires:
@@ -365,5 +364,5 @@ change:
    `./install.sh --check`.
 5. Review and commit from this repository; never copy runtime state wholesale.
 
-The default source for new project templates is the separate tracked repository
-at `~/projects/claude_project_template`.
+The default source for new project templates is the separate tracked
+`claude_project_template` repository.
