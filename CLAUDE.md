@@ -177,6 +177,8 @@ backends, backend auto-detection, or Graphify hooks.
   and may write only their assigned chunk through the `Write` tool. The parent
   workflow performs chunk validation and coordinates the single permitted
   correction; workers have no shell access.
+- Refresh reports include before/after graph totals. Treat an unexpected delta
+  as a signal to inspect the refresh result before relying on the graph.
 - Do not refresh merely because documentation changed.
 - For an explicit or material graph refresh, use a full interactive
   visualization only when the graph is within its practical node/edge limit.

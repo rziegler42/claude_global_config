@@ -46,6 +46,35 @@ def committed_semantic_files(root):
     return sorted(name for name in files if Path(name).suffix in SEMANTIC_EXTENSIONS), None
 
 
+def graph_counts(path):
+    """Return portable graph totals, or None when no readable graph exists."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", data.get("links", []))
+    hyperedges = data.get("hyperedges", [])
+    communities = {
+        node.get("community") for node in nodes
+        if isinstance(node, dict) and node.get("community") is not None
+    }
+    return {
+        "nodes": len(nodes), "edges": len(edges), "hyperedges": len(hyperedges),
+        "communities": len(communities),
+    }
+
+
+def graph_delta(before, after):
+    if before is None or after is None:
+        return None
+    return {
+        "before": before,
+        "after": after,
+        "delta": {key: after[key] - before.get(key, 0) for key in after},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("project_root", nargs="?", default=".", type=Path)
@@ -60,6 +89,7 @@ def main():
     if not graph.is_file():
         emit("skipped", reason="graph_missing", semantic_files=semantic_files)
         return 0
+    before_counts = graph_counts(graph)
 
     previous, attempts = {}, 1
     if marker.is_file():
@@ -104,9 +134,11 @@ def main():
         return 0
 
     if result.returncode == 0:
+        delta = graph_delta(before_counts, graph_counts(graph))
         if semantic_files:
             record_result(marker, commit, "semantic_refresh_required", attempts=attempts, code_refresh="updated",
-                          semantic_files=semantic_files, detection_warning=detection_error)
+                          semantic_files=semantic_files, graph_delta=delta,
+                          detection_warning=detection_error)
         else:
             head_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False)
             state_path = root / "graphify-out" / ".claude_graph_state.json"
@@ -119,7 +151,8 @@ def main():
             state.update({"head": head_result.stdout.strip() if head_result.returncode == 0 else None,
                           "generated_at": datetime.now(timezone.utc).isoformat()})
             state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            record_result(marker, commit, "updated", attempts=attempts, detection_warning=detection_error)
+            record_result(marker, commit, "updated", attempts=attempts, graph_delta=delta,
+                          detection_warning=detection_error)
     else:
         detail = (result.stderr or result.stdout or "unknown error").strip()[-500:]
         record_result(marker, commit, "failed", attempts=attempts, reason="update_failed", returncode=result.returncode,

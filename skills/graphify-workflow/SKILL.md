@@ -75,6 +75,13 @@ the truncation warning. If the narrowed follow-up remains truncated, state that
 limitation and independently verify every reported conclusion against current
 repository files.
 
+If a query returns no usable matching node or relationship, do not treat that
+as evidence of absence and do not retry with guessed synonyms. Select one exact
+component, symbol, filename, or decision title from current repository files,
+then use one narrowed `graph-explain`, `graph-affected`, or `graph-path` call.
+If no exact anchor exists, report that the graph supplied no evidence and rely
+on current source inspection instead.
+
 A stale graph is discovery evidence, not current truth; refresh first only when
 current relationships materially affect the answer.
 
@@ -119,9 +126,9 @@ through the graph. Do not refresh merely because documentation changed.
    validated, run `claude-workflow graph-finalize` directly. Finalization must
    refuse any missing, stale, structurally invalid, or coverage-incomplete
    chunk.
-7. Report graph size, failed chunks, visualization mode, and commands actually
-   run. `graph.html` is current only when the finalizer reports a generated
-   visualization; otherwise consult `GRAPH_REPORT.md` and
+7. Report graph size and before/after delta, failed chunks, visualization mode,
+   and commands actually run. `graph.html` is current only when the finalizer
+   reports a generated visualization; otherwise consult `GRAPH_REPORT.md` and
    `.claude_graph_visualization.json`, never a prior viewer.
 
 Do not independently rewrite worker output, reuse a failed old chunk, or ask

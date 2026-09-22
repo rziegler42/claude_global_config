@@ -53,6 +53,35 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def graph_counts(path):
+    """Return prior serialized graph totals when a previous graph is available."""
+    try:
+        data = load(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", data.get("links", []))
+    hyperedges = data.get("hyperedges", [])
+    communities = {
+        node.get("community") for node in nodes
+        if isinstance(node, dict) and node.get("community") is not None
+    }
+    return {
+        "nodes": len(nodes), "edges": len(edges), "hyperedges": len(hyperedges),
+        "communities": len(communities),
+    }
+
+
+def graph_delta(before, after):
+    if before is None:
+        return None
+    return {
+        "before": before,
+        "after": after,
+        "delta": {key: after[key] - before.get(key, 0) for key in after},
+    }
+
+
 def valid(data, allowed, expected_sources):
     if not isinstance(data, dict) or not all(isinstance(data.get(k), list) for k in EMPTY):
         return False
@@ -129,6 +158,7 @@ def main():
     parser.add_argument("--spec", type=Path, required=True)
     args = parser.parse_args()
     root, out = args.project_root.resolve(), (args.project_root.resolve() / args.out)
+    previous_counts = graph_counts(out / "graph.json")
     manifest = load(out / ".graphify_chunks.json")
     good, failed, sources = [], [], []
     for chunk in manifest["chunks"]:
@@ -158,8 +188,16 @@ def main():
     communities = cluster(graph)
     labels = label_communities_by_hub(graph, communities)
     cohesion = score_all(graph, communities)
+    current_counts = {
+        "nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(),
+        "hyperedges": len(combined["hyperedges"]), "communities": len(communities),
+    }
+    delta = graph_delta(previous_counts, current_counts)
     analysis = {"communities": {str(k): v for k, v in communities.items()}, "cohesion": {str(k): v for k, v in cohesion.items()}}
     report = f"# Graphify report\n\n- Nodes: {graph.number_of_nodes()}\n- Edges: {graph.number_of_edges()}\n- Communities: {len(communities)}\n- Failed semantic chunks: {len(failed)}\n"
+    if delta:
+        changes = ", ".join(f"{name} {amount:+d}" for name, amount in delta["delta"].items())
+        report += f"- Change since prior graph: {changes}\n"
     visualization = {
         "generated": False,
         "mode": "community" if graph.number_of_nodes() > HTML_NODE_LIMIT else "full",
@@ -213,7 +251,7 @@ def main():
     }
     (out / ".claude_graph_state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     (out / ".claude_refresh.json").unlink(missing_ok=True)
-    print(json.dumps({"nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(), "hyperedges": len(combined["hyperedges"]), "communities": len(communities), "failed_chunks": failed, "visualization": visualization}))
+    print(json.dumps({"nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(), "hyperedges": len(combined["hyperedges"]), "communities": len(communities), "graph_delta": delta, "failed_chunks": failed, "visualization": visualization}))
 
 
 if __name__ == "__main__":

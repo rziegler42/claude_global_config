@@ -14,7 +14,16 @@ manifest digest>","status":"read_complete"}`. Add an entry only after reading
 that source through EOF. Never write a partial chunk to preserve progress; if
 any source is incomplete, report the incomplete paths without writing output.
 
-Each node requires `id`, `label`, `file_type`, and `source_file`. `file_type` is one of `code`, `document`, `paper`, `image`, `rationale`, or `concept`. IDs are lowercase `[a-z0-9_]`, derived deterministically from the full repository-relative source path plus entity name; never add chunk or sequence suffixes.
+Each node requires `id`, `label`, `file_type`, and `source_file`. `file_type`
+is one of `code`, `document`, `paper`, `image`, `rationale`, or `concept`. IDs
+are lowercase `[a-z0-9_]`, derived deterministically from the full
+repository-relative source path plus entity name; never add chunk or sequence
+suffixes. Construct an ID by removing the extension from the full
+repository-relative path, lowercasing it, replacing each non-alphanumeric run
+with `_`, then appending the entity name normalized the same way. For example,
+`docs/plans/next.md` and `Four-Uop Foundation` become
+`docs_plans_next_four_uop_foundation`. Retain every directory segment; never
+use only a basename or immediate parent directory.
 
 Each edge requires `source`, `target`, `relation`, `confidence`, `confidence_score`, and `source_file`. Confidence is `EXTRACTED`, `INFERRED`, or `AMBIGUOUS`. EXTRACTED scores 1.0; INFERRED uses 0.95, 0.85, 0.75, 0.65, or 0.55; AMBIGUOUS uses 0.1 through 0.3. Calls point caller to callee and never cross programming languages.
 
