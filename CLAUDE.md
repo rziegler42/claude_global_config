@@ -206,6 +206,13 @@ Treat `graphify-out/` as rebuildable local state. Do not stage or commit it unle
   increment, material discovery captured in repository documents, a resolved
   debugging path, or submission of a remote test whose job ID and purpose have
   been recorded.
+- After successfully committing a completed plan increment, first ensure the
+  plan or another durable repository artifact records its outcome,
+  verification, unresolved risks, and next action. When the completed
+  increment accumulated meaningful conversation or tool output, recommend
+  that the user run `/compact` and stop before starting the next increment.
+  Do not require boundary compaction after a trivial increment; rely on Claude
+  Code's automatic threshold-based compaction as the fallback.
 - Preserve the active objective and approved scope; active plan path and
   increment; governing decisions; changed files; verification results;
   unresolved risks; next action; and remote-runner job IDs, submitted SHAs,
