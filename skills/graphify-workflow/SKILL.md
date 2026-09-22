@@ -27,6 +27,14 @@ For a narrow item whose scope, files, and precedents are already fully
 enumerated, skip the query and record `Graphify: skipped — <concise reason>` in
 the plan.
 
+**Plan finalization:** Before presenting a substantive plan as complete,
+requesting approval, or changing its status to `Approved`, confirm it contains
+either a `## Graphify` receipt or the documented skip above. A receipt records
+graph freshness, the focused purpose, and the conclusion verified against
+current source; do not preserve raw output. A `stale_semantic` or `stale_code`
+graph may orient discovery but cannot supply that conclusion without direct
+verification and a recorded limitation.
+
 **Implementation:** Do not query Graphify for routine work inside an
 already-enumerated increment. Run one focused query if a cross-component
 surprise, material verification failure, or scope expansion invalidates the

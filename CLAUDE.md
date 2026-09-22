@@ -162,6 +162,13 @@ backends, backend auto-detection, or Graphify hooks.
 - A narrow roadmap item may skip that query only when its scope, relevant files,
   and precedents are already fully enumerated. Record `Graphify: skipped —
   <concise reason>` in the plan rather than silently skipping it.
+- **Plan-finalization receipt:** before presenting a substantive plan as
+  complete, requesting its approval, or changing its status to `Approved`,
+  confirm it contains either a `## Graphify` receipt or the documented skip
+  above. A receipt records graph freshness, the focused purpose, and the
+  conclusion verified against current source; it does not preserve raw output.
+  A `stale_semantic` or `stale_code` graph may orient discovery but cannot
+  supply the conclusion without that direct verification and recorded limit.
 - During implementation, do not query Graphify for routine work within an
   already-enumerated increment. Run one focused query when a cross-component
   surprise, material verification failure, or scope expansion makes the plan's
