@@ -96,6 +96,11 @@ current relationships materially affect the answer.
 Never invoke vendor Graphify commands directly, inspect their help, select an
 external LLM backend, use backend auto-detection, or install hooks.
 
+Use `claude-workflow graph-doctor` when Graphify status is unclear. It is
+read-only and reports the workflow state plus one safe next action; it never
+refreshes, finalizes, deletes, or rebuilds. Use `graph-diagnose` only for
+structural graph analysis, not refresh-state diagnosis.
+
 ## Build or refresh
 
 Build or refresh only when current code relationships will provide future

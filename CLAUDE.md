@@ -176,6 +176,9 @@ backends, backend auto-detection, or Graphify hooks.
   changes.
 - Check freshness before relying on a graph query and verify important findings
   against current files.
+- When Graphify status is unclear, run `claude-workflow graph-doctor`. It is
+  read-only and supplies one safe next action; `graph-diagnose` is for graph
+  structure, not workflow state.
 - Refresh code relationships after a coherent code change only when future
   impact analysis would benefit.
 - Request a semantic refresh only after a material architecture, ADR, or design

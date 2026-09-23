@@ -243,6 +243,76 @@ def graph_abort(root, confirm):
     emit("aborted", graph=str(graph_file(root)), discarded_chunks=len(outputs))
 
 
+def graph_doctor(root):
+    """Report Graphify workflow health and one safe next action without mutation."""
+    out = root / "graphify-out"
+    graph = out / "graph.json"
+    refresh = out / ".claude_refresh.json"
+    manifest_path = out / ".graphify_chunks.json"
+    viewer = out / "graph.html"
+    if refresh.is_file():
+        try:
+            refresh_state = json.loads(refresh.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            emit("refresh_marker_invalid", graph=str(graph), viewer_present=viewer.is_file(),
+                 next_action="inspect the refresh marker; do not remove it manually", error=str(exc))
+            return
+        if refresh_state.get("status") != "prepared":
+            emit("refresh_marker_unexpected", graph=str(graph), viewer_present=viewer.is_file(),
+                 next_action="inspect the refresh marker; do not remove it manually",
+                 marker_status=refresh_state.get("status"))
+            return
+        if not manifest_path.is_file():
+            emit("prepared_manifest_missing", graph=str(graph), viewer_present=viewer.is_file(),
+                 next_action="inspect the prepared refresh; do not remove its marker manually")
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            chunks = manifest.get("chunks")
+            if not isinstance(chunks, list):
+                raise ValueError("manifest has no chunk list")
+            outputs = []
+            for chunk in chunks:
+                output = chunk.get("output") if isinstance(chunk, dict) else None
+                if not isinstance(output, str) or not re.fullmatch(
+                    r"graphify-out/\.graphify_chunk_[0-9]+\.json", output
+                ):
+                    raise ValueError("manifest has an unsafe chunk output path")
+                outputs.append(root / output)
+        except (OSError, ValueError) as exc:
+            emit("prepared_manifest_invalid", graph=str(graph), viewer_present=viewer.is_file(),
+                 next_action="inspect the prepared refresh; do not remove its marker manually", error=str(exc))
+            return
+        written = [str(path.relative_to(root)) for path in outputs if path.is_file()]
+        if not written:
+            emit("prepared_no_chunks", graph=str(graph), viewer_present=viewer.is_file(),
+                 chunks_total=len(outputs), next_action="claude-workflow graph-abort --confirm")
+            return
+        if len(written) == len(outputs):
+            emit("prepared_all_chunks_written", graph=str(graph), viewer_present=viewer.is_file(),
+                 chunks_total=len(outputs), next_action="validate every assigned chunk, then run claude-workflow graph-finalize")
+            return
+        emit("prepared_partial_chunks", graph=str(graph), viewer_present=viewer.is_file(),
+             chunks_total=len(outputs), chunks_written=len(written),
+             next_action="resume the missing semantic workers; do not use graph-abort")
+        return
+    if not graph.is_file():
+        emit("graph_missing", graph=str(graph), viewer_present=viewer.is_file(),
+             next_action="claude-workflow graph-prepare")
+        return
+    details = graph_status_details(root)
+    status = details.pop("status")
+    if status == "current":
+        action = "none"
+    elif status == "stale_semantic":
+        action = "use current source for the immediate task; prepare a semantic refresh only if the changed material should be discoverable"
+    elif status == "stale_code":
+        action = "after a coherent content commit, run claude-workflow graph-post-commit"
+    else:
+        action = "inspect graph freshness metadata before relying on graph results"
+    emit(status, **details, viewer_present=viewer.is_file(), next_action=action)
+
+
 def graph_finalize(root):
     spec = graph_script("../references/extraction-spec.md").resolve()
     result = run([sys.executable, str(graph_script("finalize.py")), str(root), "--spec", str(spec)], root)
@@ -553,7 +623,7 @@ def main():
     amend_p = sub.add_parser("amend-message")
     amend_p.add_argument("--expected-head", required=True)
     amend_p.add_argument("--subject", required=True)
-    for name in ("context", "project-id", "graph-status", "graph-prepare", "graph-abort", "graph-finalize", "graph-post-commit"):
+    for name in ("context", "project-id", "graph-status", "graph-doctor", "graph-prepare", "graph-abort", "graph-finalize", "graph-post-commit"):
         item = sub.add_parser(name)
         item.add_argument("root", nargs="?", default=".")
         if name == "graph-prepare":
@@ -600,6 +670,7 @@ def main():
         if args.command == "context": workflow_context(root)
         elif args.command == "project-id": project_id(root)
         elif args.command == "graph-status": graph_status(root)
+        elif args.command == "graph-doctor": graph_doctor(root)
         elif args.command == "graph-prepare": graph_prepare(root, args.deep)
         elif args.command == "graph-abort": graph_abort(root, args.confirm)
         elif args.command == "graph-finalize": graph_finalize(root)
