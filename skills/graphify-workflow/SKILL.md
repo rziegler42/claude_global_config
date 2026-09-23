@@ -139,6 +139,12 @@ through the graph. Do not refresh merely because documentation changed.
    reports a generated visualization; otherwise consult `GRAPH_REPORT.md` and
    `.claude_graph_visualization.json`, never a prior viewer.
 
+If a prepared refresh is abandoned before any assigned semantic chunk exists,
+cancel it only with `claude-workflow graph-abort --confirm`. It removes the
+prepared marker and its manifest, restoring ordinary graph status. It refuses
+to discard a refresh once any assigned chunk exists; then resume or finalize
+instead. Never remove refresh state or manifests manually.
+
 Do not independently rewrite worker output, reuse a failed old chunk, or ask
 for chunk JSON in chat. Parent-side validation is required; it is not an
 independent semantic rewrite.

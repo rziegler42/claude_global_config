@@ -186,6 +186,10 @@ backends, backend auto-detection, or Graphify hooks.
   correction; workers have no shell access.
 - Refresh reports include before/after graph totals. Treat an unexpected delta
   as a signal to inspect the refresh result before relying on the graph.
+- Cancel an abandoned prepared refresh only with
+  `claude-workflow graph-abort --confirm`, and only when no assigned semantic
+  chunk exists. The helper refuses to discard any written chunk; resume or
+  finalize such a refresh instead. Never manually remove refresh state.
 - Do not refresh merely because documentation changed.
 - For an explicit or material graph refresh, use a full interactive
   visualization only when the graph is within its practical node/edge limit.

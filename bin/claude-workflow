@@ -204,6 +204,45 @@ def graph_prepare(root, deep=False):
     print(result.stdout.rstrip())
 
 
+def graph_abort(root, confirm):
+    """Cancel a prepared refresh only when no semantic chunk was written."""
+    if not confirm:
+        raise ValueError("graph-abort requires --confirm")
+    out = root / "graphify-out"
+    refresh = out / ".claude_refresh.json"
+    manifest_path = out / ".graphify_chunks.json"
+    if not refresh.is_file():
+        emit("nothing_to_abort", graph=str(graph_file(root)))
+        return
+    try:
+        refresh_state = json.loads(refresh.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"refresh marker is unreadable: {exc}")
+    if refresh_state.get("status") != "prepared":
+        raise RuntimeError("refusing to abort a refresh that is not prepared")
+    if not manifest_path.is_file():
+        raise RuntimeError("refusing to abort: prepared refresh manifest is missing")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"refresh manifest is unreadable: {exc}")
+    chunks = manifest.get("chunks")
+    if not isinstance(chunks, list):
+        raise RuntimeError("refresh manifest has no chunk list")
+    outputs = []
+    for chunk in chunks:
+        output = chunk.get("output") if isinstance(chunk, dict) else None
+        if not isinstance(output, str) or not re.fullmatch(r"graphify-out/\.graphify_chunk_[0-9]+\.json", output):
+            raise RuntimeError("refresh manifest has an unsafe chunk output path")
+        outputs.append(root / output)
+    written = [str(path.relative_to(root)) for path in outputs if path.is_file()]
+    if written:
+        raise RuntimeError("refusing to abort: semantic chunks exist; resume or finalize the refresh first")
+    refresh.unlink()
+    manifest_path.unlink()
+    emit("aborted", graph=str(graph_file(root)), discarded_chunks=len(outputs))
+
+
 def graph_finalize(root):
     spec = graph_script("../references/extraction-spec.md").resolve()
     result = run([sys.executable, str(graph_script("finalize.py")), str(root), "--spec", str(spec)], root)
@@ -514,11 +553,13 @@ def main():
     amend_p = sub.add_parser("amend-message")
     amend_p.add_argument("--expected-head", required=True)
     amend_p.add_argument("--subject", required=True)
-    for name in ("context", "project-id", "graph-status", "graph-prepare", "graph-finalize", "graph-post-commit"):
+    for name in ("context", "project-id", "graph-status", "graph-prepare", "graph-abort", "graph-finalize", "graph-post-commit"):
         item = sub.add_parser(name)
         item.add_argument("root", nargs="?", default=".")
         if name == "graph-prepare":
             item.add_argument("--deep", action="store_true")
+        if name == "graph-abort":
+            item.add_argument("--confirm", action="store_true")
     query_p = sub.add_parser("graph-query")
     query_p.add_argument("question")
     query_p.add_argument("--root", default=".")
@@ -560,6 +601,7 @@ def main():
         elif args.command == "project-id": project_id(root)
         elif args.command == "graph-status": graph_status(root)
         elif args.command == "graph-prepare": graph_prepare(root, args.deep)
+        elif args.command == "graph-abort": graph_abort(root, args.confirm)
         elif args.command == "graph-finalize": graph_finalize(root)
         elif args.command == "graph-post-commit": graph_post_commit(root)
         elif args.command == "graph-query": graph_query(root, args)
