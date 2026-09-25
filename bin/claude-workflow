@@ -81,6 +81,65 @@ def validate_paths(root, paths):
     return validated
 
 
+def removal_targets(root, paths, recursive):
+    if not paths:
+        raise ValueError("at least one exact project-relative path is required")
+    targets = []
+    selected = []
+    for raw in paths:
+        path = Path(raw)
+        if (not raw or raw.startswith("-") or path.is_absolute() or raw in {".", ".."}
+                or any(part in {".", ".."} for part in path.parts)
+                or any(char in raw for char in "*?[]")):
+            raise ValueError(f"unsafe or non-exact removal path: {raw}")
+        normalized = path.as_posix()
+        if any(normalized == existing or normalized.startswith(existing + "/")
+               or existing.startswith(normalized + "/") for existing in selected):
+            raise ValueError(f"overlapping removal targets are not allowed: {normalized}")
+        if normalized == ".git" or normalized.startswith(".git/"):
+            raise ValueError("refusing to remove Git metadata")
+        target = root / normalized
+        if not target.exists() and not target.is_symlink():
+            raise ValueError(f"removal target does not exist: {normalized}")
+        parent = target.parent.resolve()
+        try:
+            parent.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"removal path escapes repository through a parent symlink: {normalized}") from exc
+        if target.is_symlink():
+            kind = "symlink"
+        else:
+            resolved = target.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(f"removal path escapes repository: {normalized}") from exc
+            if resolved == root:
+                raise ValueError("refusing to remove the repository root")
+            kind = "directory" if target.is_dir() else "file"
+            if kind == "directory" and not recursive:
+                raise ValueError(f"directory removal requires --recursive: {normalized}")
+        targets.append((normalized, target, kind))
+        selected.append(normalized)
+    return targets
+
+
+def remove_paths(root, paths, recursive, confirm):
+    """Preview or remove validated project-local paths without following links."""
+    targets = removal_targets(root, paths, recursive)
+    preview = [{"path": path, "kind": kind} for path, _, kind in targets]
+    if not confirm:
+        emit("preview", targets=preview,
+             next_action="rerun the identical command with --confirm after user approval")
+        return
+    for _, target, kind in targets:
+        if kind == "directory":
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    emit("removed", targets=preview)
+
+
 def graph_script(name):
     path = Path.home() / ".claude" / "skills" / "graphify-workflow" / "scripts" / name
     if not path.is_file():
@@ -623,6 +682,10 @@ def main():
     amend_p = sub.add_parser("amend-message")
     amend_p.add_argument("--expected-head", required=True)
     amend_p.add_argument("--subject", required=True)
+    remove_p = sub.add_parser("remove")
+    remove_p.add_argument("--recursive", action="store_true")
+    remove_p.add_argument("--confirm", action="store_true")
+    remove_p.add_argument("paths", nargs="+")
     for name in ("context", "project-id", "graph-status", "graph-doctor", "graph-prepare", "graph-abort", "graph-finalize", "graph-post-commit"):
         item = sub.add_parser(name)
         item.add_argument("root", nargs="?", default=".")
@@ -663,6 +726,8 @@ def main():
     args = parser.parse_args()
     if args.command == "commit": commit(args)
     elif args.command == "amend-message": amend(args)
+    elif args.command == "remove":
+        remove_paths(git_root(Path.cwd()), args.paths, args.recursive, args.confirm)
     elif args.command == "graph-validate-chunk":
         graph_validate_chunk(git_root(Path.cwd()), args.chunk)
     else:

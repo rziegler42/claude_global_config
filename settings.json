@@ -25,6 +25,7 @@
       "Bash(claude-workflow context:*)",
       "Bash(claude-workflow project-id:*)",
       "Bash(claude-workflow graph-status:*)",
+      "Bash(claude-workflow graph-doctor:*)",
       "Bash(claude-workflow graph-query:*)",
       "Bash(claude-workflow graph-path:*)",
       "Bash(claude-workflow graph-explain:*)",
@@ -34,6 +35,7 @@
       "Bash(claude-workflow graph-validate-chunk:*)",
       "Bash(claude-workflow graph-finalize:*)",
       "Bash(claude-workflow graph-post-commit:*)",
+      "Bash(claude-workflow remove:*)",
       "Bash(claude-workflow commit:*)",
       "Bash(claude-workflow amend-message:*)"
     ],

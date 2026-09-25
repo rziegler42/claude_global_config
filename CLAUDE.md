@@ -20,6 +20,12 @@
 - Run the narrowest useful check, inspect failures, correct them, and rerun.
 - Use commands documented by the repository. Ask before unfamiliar or materially risky commands.
 - Never commit, amend, push, publish, deploy, install dependencies, use secrets, or perform destructive cleanup without explicit user approval.
+- For an explicitly approved project-local file or directory deletion, use
+  `claude-workflow remove <exact-relative-path>...` to preview it, then rerun
+  the identical command with `--confirm` (and `--recursive` for directories).
+  It refuses absolute paths, traversal, Git metadata, repository-root removal,
+  and symlink escapes. Raw `rm` remains hard-denied; do not substitute another
+  unbounded deletion command.
 - Do not use `git checkout` or `git restore`; they are hard-denied because their file-restoration forms can overwrite work. For branch navigation or creation, use `git switch` or `git switch -c` and request approval before changing branches. `git reset`, `git clean`, `git merge`, and `git rebase` remain hard-denied.
 - A request to commit never authorizes a push. A plan, memory, or graph never constitutes authorization to implement.
 
