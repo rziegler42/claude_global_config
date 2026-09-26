@@ -3,6 +3,9 @@
 
 Usage (from an agent's frontmatter hook):  python3 -B review_agent_guard.py MODE
   reviewer  Bash may only inspect and run checks; Write/Edit are refused.
+  research  For the technical-researcher: Read/Grep/Glob refuse credential paths, and
+            WebFetch/WebSearch refuse credentials, non-https URLs, long query strings,
+            and long search queries (so repository text cannot be sent out).
   security  As reviewer, plus scratch-only mutation: Write/Edit, mkdir, cp, mv,
             touch, chmod, git init/clone/-C, and running scripts, all confined to
             the session scratchpad (/tmp/claude-<uid>/<project>/<session>/scratchpad).
@@ -41,6 +44,11 @@ GIT_READ = {
 GIT_SCRATCH_DENIED = {"push", "pull", "fetch", "clone", "remote", "send-email",
                       "submodule", "daemon", "credential"}
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+SECRET_NAMES = {".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", "id_rsa", "id_ed25519",
+                "id_ecdsa", "id_dsa", "credentials", "credentials.json", "secrets.json"}
+SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", "gcloud"}
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".tfstate")
+MAX_QUERY = 200
 SED_SCRIPT_RE = re.compile(r"^(?:\d+|\$)?(?:,(?:\d+|\$))?p$")
 
 
@@ -337,6 +345,30 @@ def check_segment(words, cwd, mode):
     raise Deny("%s is not on the allowlist" % cmd)
 
 
+def check_secret_path(path, cwd):
+    if not path:
+        return
+    resolved = resolve(path, cwd)
+    parts = resolved.split(os.sep)
+    name = parts[-1].lower()
+    if (name.startswith(".env") or name in SECRET_NAMES or name.endswith(SECRET_SUFFIXES)
+            or any(part in SECRET_DIRS for part in parts[:-1] + [parts[-1]])):
+        raise Deny("credential paths are off limits: %s" % path)
+
+
+def check_url(url):
+    from urllib.parse import urlsplit
+    parts = urlsplit(url or "")
+    if parts.scheme != "https" or not parts.hostname:
+        raise Deny("only https URLs are allowed")
+    if parts.username or parts.password:
+        raise Deny("URLs with embedded credentials are not allowed")
+    if len(parts.query) > MAX_QUERY or len(parts.fragment) > MAX_QUERY:
+        raise Deny("URL query or fragment is too long to be a documentation lookup")
+    if len(url) > 500:
+        raise Deny("URL is too long")
+
+
 def check_bash(command, cwd, mode):
     for words in split_command(command):
         cwd = check_segment(words, cwd, mode)
@@ -346,6 +378,18 @@ def decide(data, mode):
     tool = data.get("tool_name")
     tool_input = data.get("tool_input") or {}
     cwd = data.get("cwd") or os.getcwd()
+    if mode == "research":
+        if tool in ("Read", "Grep", "Glob"):
+            for key in ("file_path", "path", "pattern" if tool == "Glob" else "path"):
+                check_secret_path(tool_input.get(key) or "", cwd)
+        elif tool == "WebFetch":
+            check_url(tool_input.get("url"))
+        elif tool == "WebSearch":
+            if len(tool_input.get("query") or "") > MAX_QUERY:
+                raise Deny("search query is too long; use a short, generic query")
+        else:
+            raise Deny("unexpected tool %s" % tool)
+        return
     if tool == "Bash":
         check_bash(tool_input.get("command") or "", cwd, mode)
     elif tool in ("Write", "Edit", "NotebookEdit"):
@@ -361,8 +405,8 @@ def decide(data, mode):
 def main(argv):
     mode = argv[1] if len(argv) > 1 else ""
     try:
-        if mode not in ("reviewer", "security"):
-            raise Deny("guard mode must be 'reviewer' or 'security'")
+        if mode not in ("reviewer", "security", "research"):
+            raise Deny("guard mode must be 'reviewer', 'security' or 'research'")
         decide(json.load(sys.stdin), mode)
     except Deny as exc:
         print("Blocked by review_agent_guard (%s): %s. Report it as a recommendation "

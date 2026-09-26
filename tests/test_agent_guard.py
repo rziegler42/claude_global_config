@@ -194,6 +194,42 @@ class ReviewerBash(GuardCase):
         self.assertEqual(empty.returncode, 2)
 
 
+class ResearchMode(GuardCase):
+    def call(self, tool, **tool_input):
+        return run("research", tool, self.repo, **tool_input).returncode
+
+    def test_ordinary_lookups_are_allowed(self):
+        self.assertEqual(self.call("Read", file_path=str(self.repo / "Cargo.toml")), 0)
+        self.assertEqual(self.call("Grep", pattern="version", path=str(self.repo / "src")), 0)
+        self.assertEqual(self.call("Glob", pattern="**/*.toml"), 0)
+        self.assertEqual(self.call("WebFetch", url="https://docs.python.org/3/library/shlex.html?highlight=shlex",
+                                   prompt="quoting rules"), 0)
+        self.assertEqual(self.call("WebSearch", query="python 3.13 shlex punctuation_chars"), 0)
+
+    def test_credential_paths_are_refused(self):
+        home = Path.home()
+        for path in [str(self.repo / ".env"), str(self.repo / ".env.local"), str(home / ".ssh" / "config"),
+                     str(home / ".aws" / "credentials"), str(self.repo / "server.pem"), str(self.repo / "a.key"),
+                     str(home / ".netrc"), str(self.repo / "id_rsa"), ".env", "../.env",
+                     str(self.repo / "terraform.tfstate")]:
+            with self.subTest(path=path):
+                self.assertEqual(self.call("Read", file_path=path), 2)
+        self.assertEqual(self.call("Grep", pattern="x", path=str(home / ".ssh")), 2)
+        self.assertEqual(self.call("Grep", pattern="x", path=str(home / ".aws")), 2)
+
+    def test_exfiltration_shaped_fetches_and_searches_are_refused(self):
+        for url in ["http://docs.python.org/x", "https://user:pw@example.com/x", "ftp://example.com/x",
+                    "https://example.com/?d=" + "A" * 201, "https://example.com/#" + "B" * 201,
+                    "https://example.com/" + "c" * 600, "file:///etc/passwd", "", "example.com/x"]:
+            with self.subTest(url=url[:40]):
+                self.assertEqual(self.call("WebFetch", url=url), 2)
+        self.assertEqual(self.call("WebSearch", query="q " * 101), 2)
+
+    def test_other_tools_are_refused(self):
+        self.assertEqual(self.call("Bash", command="ls"), 2)
+        self.assertEqual(self.call("Write", file_path=str(self.repo / "a")), 2)
+
+
 class SecurityMode(GuardCase):
     """The scratch regex is anchored at /tmp, so these tests use the real /tmp layout."""
 
