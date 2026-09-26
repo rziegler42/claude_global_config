@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 
@@ -43,7 +44,23 @@ def committed_semantic_files(root):
     if result.returncode != 0:
         return [], "git_diff_failed"
     files = [name for name in result.stdout.split("\0") if name]
-    return sorted(name for name in files if Path(name).suffix.lower() in SEMANTIC_EXTENSIONS), None
+    semantic = [name for name in files if Path(name).suffix.lower() in SEMANTIC_EXTENSIONS]
+    return sorted(set(semantic) - ignored_paths(root, semantic)), None
+
+
+def ignored_paths(root, paths):
+    """Paths Graphify's ignore rules exclude; none when that cannot be determined."""
+    if not paths:
+        return set()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("ignored_paths.py")), str(root)],
+            input=json.dumps(sorted(paths)), text=True, capture_output=True, check=False, timeout=60)
+        if result.returncode != 0:
+            return set()
+        return set(json.loads(result.stdout.strip().splitlines()[-1])) & set(paths)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return set()
 
 
 def graph_counts(path):

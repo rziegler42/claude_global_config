@@ -271,6 +271,22 @@ def dirty_paths(root):
     return {path for path in paths if not path.startswith("graphify-out/")}
 
 
+def graph_ignored_paths(root, paths):
+    """Return the paths Graphify's ignore rules exclude, or none when that cannot be determined."""
+    if not paths:
+        return set()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(graph_script("ignored_paths.py")), str(root)],
+            input=json.dumps(sorted(paths)), text=True, capture_output=True, check=False, timeout=60)
+        if result.returncode != 0:
+            return set()
+        listed = json.loads(result.stdout.strip().splitlines()[-1])
+    except (RuntimeError, OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return set()
+    return {item for item in listed if item in paths}
+
+
 def graph_status_details(root):
     graph = root / "graphify-out" / "graph.json"
     if not graph.is_file():
@@ -308,6 +324,10 @@ def graph_status_details(root):
                 return {"status": "present", "graph": str(graph),
                         "warning": f"freshness baseline commit is not resolvable: {base}"}
             target.update(changed)
+    # Files the graph never ingests (.graphifyignore, .gitignore, skip files) cannot make it stale.
+    ignored = graph_ignored_paths(root, code_paths | semantic_paths)
+    code_paths -= ignored
+    semantic_paths -= ignored
     semantic = sorted(path for path in semantic_paths if Path(path).suffix.lower() in SEMANTIC_EXTENSIONS)
     if semantic:
         return {"status": "stale_semantic", "graph": str(graph), "changed": semantic[:20]}

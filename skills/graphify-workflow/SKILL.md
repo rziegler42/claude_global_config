@@ -150,4 +150,10 @@ does not invalidate a successful commit. A `semantic_refresh_required` result
 keeps the graph `stale_semantic`, even after later code-only commits, until a
 semantic refresh finalizes.
 
+Paths the graph never ingests (`.graphifyignore`, `.gitignore`, skip files) do not
+affect freshness or the semantic-refresh signal. Keep working files that change while
+the graph is queried, such as `docs/plans/next.md`, in `.graphifyignore`. Adding a
+rule does not remove nodes already in the graph; they disappear at the next semantic
+refresh. If the ignore helper cannot run, nothing is filtered and the graph reads as stale.
+
 Treat `graphify-out/` as rebuildable local state; never stage or commit it automatically.

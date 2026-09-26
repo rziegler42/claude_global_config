@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True  # do not leave __pycache__ in the skill directory
 
@@ -55,6 +56,12 @@ class Repo:
         stub = self.bin / "graphify"
         stub.write_text(f"#!/bin/sh\nexit {stub_exit}\n")
         stub.chmod(0o755)
+        real = shutil.which("graphify")
+        if real:
+            # The workflow scripts look for Graphify's Python next to the `graphify` on PATH.
+            python = self.bin / "python"
+            python.write_text(f'#!/bin/sh\nexec "{Path(real).resolve().parent / "python"}" "$@"\n')
+            python.chmod(0o755)
         git(self.root, "init", "-q")
         git(self.root, "config", "user.email", "t@example.com")
         git(self.root, "config", "user.name", "t")
@@ -146,6 +153,40 @@ class StatusAndPostCommit(unittest.TestCase):
         repo.write("README.MD", "# doc\n")
         repo.commit("upper")
         self.assertEqual(repo.post_commit()["graphify_post_commit"], "semantic_refresh_required")
+
+
+@unittest.skipUnless(shutil.which("graphify"), "needs the Graphify runtime for its ignore rules")
+class IgnoredPathsDoNotMakeTheGraphStale(unittest.TestCase):
+    def setUp(self):
+        self.repo = Repo()
+        self.addCleanup(self.repo.cleanup)
+        self.repo.write(".graphifyignore", "/docs/plans/next.md\n")
+        self.repo.commit("ignore rules")
+        self.repo.set_state(head=self.repo.head(), semantic_head=self.repo.head())
+
+    def test_dirty_ignored_file_leaves_the_graph_current(self):
+        self.repo.write("docs/plans/next.md", "# plan\n")
+        self.assertEqual(self.repo.status(), "current")
+
+    def test_dirty_unignored_document_still_makes_it_stale(self):
+        self.repo.write("docs/plans/other.md", "# plan\n")
+        self.assertEqual(self.repo.status(), "stale_semantic")
+
+    def test_committed_ignored_file_leaves_the_graph_current_after_post_commit(self):
+        self.repo.write("docs/plans/next.md", "# plan\n")
+        self.repo.commit("plan")
+        self.assertEqual(self.repo.post_commit()["graphify_post_commit"], "updated")
+        self.assertEqual(self.repo.status(), "current")
+
+    def test_committed_unignored_document_still_requests_a_semantic_refresh(self):
+        self.repo.write("docs/plans/other.md", "# plan\n")
+        self.repo.commit("plan")
+        self.assertEqual(self.repo.post_commit()["graphify_post_commit"], "semantic_refresh_required")
+
+    def test_unavailable_ignore_helper_falls_back_to_stale(self):
+        self.repo.write("docs/plans/next.md", "# plan\n")
+        with unittest.mock.patch.object(CW.subprocess, "run", side_effect=OSError("no helper")):
+            self.assertEqual(CW.graph_ignored_paths(self.repo.root, {"docs/plans/next.md"}), set())
 
 
 class PostCommitRetries(unittest.TestCase):

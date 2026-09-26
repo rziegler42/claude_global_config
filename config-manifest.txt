@@ -16,6 +16,7 @@ skills/graphify-workflow/SKILL.md
 skills/graphify-workflow/references/extraction-spec.md
 skills/graphify-workflow/references/refresh.md
 skills/graphify-workflow/scripts/finalize.py
+skills/graphify-workflow/scripts/ignored_paths.py
 skills/graphify-workflow/scripts/post_commit.py
 skills/graphify-workflow/scripts/prepare.py
 skills/graphify-workflow/tests/test_workflow.py
