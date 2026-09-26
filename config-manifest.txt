@@ -5,8 +5,10 @@ settings.json
 agents/graphify-semantic.md
 agents/implementer.md
 agents/safe-committer.md
+agents/security-reviewer.md
 agents/technical-researcher.md
 agents/workflow-reviewer.md
+hooks/review_agent_guard.py
 bin/claude-workflow
 bin/remote-runner
 skills/architecture-decisions/SKILL.md

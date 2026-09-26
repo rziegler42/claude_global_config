@@ -87,7 +87,7 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   knowledge.
 - Use `architecture-decisions` for durable design choices or ADR requests.
 - For changes that materially affect authentication, authorization, secrets, untrusted input, parsing, filesystem/subprocess execution, network boundaries, dependencies, CI permissions, or deployment, use the `security-review` skill and include an adversarial verification when practical.
-- Delegate only bounded work that benefits from isolation. Use `implementer` for an approved implementation slice, `workflow-reviewer` for independent material-risk review, `technical-researcher` for current external evidence, `graphify-semantic` only through the Graphify skill, and `safe-committer` only after an explicit commit request.
+- Delegate only bounded work that benefits from isolation. Use `implementer` for an approved implementation slice, `workflow-reviewer` for independent read-only material-risk review, `security-reviewer` for an adversarial security review that needs scratch experiments, `technical-researcher` for current external evidence, `graphify-semantic` only through the Graphify skill, and `safe-committer` only after an explicit commit request.
 - Do not repeat a failed, empty, or unavailable delegation. Continue directly when safe or report the limitation.
 
 ## Implementation and verification
