@@ -1,7 +1,7 @@
 # Semantic extraction contract
 
 Read every assigned file completely. For a long file, use paged reads until EOF;
-reading only changed hunks, an opening section, or an index tail is insufficient.
+reading only the changed lines, an opening section, or an index tail is insufficient.
 Write only the exact assigned chunk path as JSON, with no prose or Markdown.
 
 Schema:
