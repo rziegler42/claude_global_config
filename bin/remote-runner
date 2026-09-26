@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,6 +35,21 @@ JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 # A project ID names a directory on the runner and is embedded in job IDs, so it
 # must be a plain word: no separators, no leading dot, nothing a shell would parse.
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+# The runner fetches from the repository's origin, so only ordinary transports are
+# accepted: https, ssh, or scp-style user@host:path. Nothing may start with "-".
+SOURCE_URL = re.compile(r"^(https://|ssh://|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\x00-\x1f]+$")
+REQUIREMENT_KEYS = frozenset({"os", "arch", "min_memory_gib", "min_cpu_cores", "labels"})
+
+
+def is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def retention_days(value: float, name: str) -> float:
+    """A retention period must be a finite, non-negative number of days."""
+    if not math.isfinite(value) or value < 0:
+        fail(f"{name} must be a finite, non-negative number of days")
+    return value
 
 
 def fail(message: str) -> None:
@@ -148,17 +165,27 @@ def capability_mismatches(config: dict[str, object],
     if not isinstance(capabilities, dict):
         return ["capabilities is not a TOML table"]
     mismatches: list[str] = []
+    # Fail closed: a misspelled key or a wrongly typed value must make the
+    # runner ineligible, never silently drop the requirement.
+    for key in sorted(set(requirements) - REQUIREMENT_KEYS):
+        mismatches.append(f"unknown requirement {key!r}")
     for key in ("os", "arch"):
         required = requirements.get(key)
-        if required is not None and capabilities.get(key) != required:
+        if required is None:
+            continue
+        if not isinstance(required, str):
+            mismatches.append(f"{key} requirement must be a string")
+        elif capabilities.get(key) != required:
             mismatches.append(f"{key}={required!r} required")
     for key in ("min_memory_gib", "min_cpu_cores"):
         required = requirements.get(key)
+        if required is None:
+            continue
         available_key = key.removeprefix("min_")
         available = capabilities.get(available_key)
-        if isinstance(required, (int, float)) and (
-            not isinstance(available, (int, float)) or available < required
-        ):
+        if not is_number(required):
+            mismatches.append(f"{key} requirement must be a number")
+        elif not is_number(available) or available < required:
             mismatches.append(f"{key}={required} required")
     required_labels = requirements.get("labels", [])
     available_labels = capabilities.get("labels", [])
@@ -270,6 +297,8 @@ def controller(args: argparse.Namespace) -> None:
     if args.action == "submit":
         repo = repository_root()
         ref = args.ref or "HEAD"
+        if ref.startswith("-"):
+            fail("--ref must not start with '-'")
         commit = git_value(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
         project, profiles, requirements = project_config(repo, revision=commit)
         if args.profile not in profiles:
@@ -280,6 +309,8 @@ def controller(args: argparse.Namespace) -> None:
             if remote is None:
                 fail(f"no eligible available remote for profile {args.profile!r}: {json.dumps(report)}")
         source_url = git_value(repo, "remote", "get-url", "origin")
+        if not SOURCE_URL.fullmatch(source_url):
+            fail("origin URL must be https://, ssh:// or scp-style user@host:path")
         source_ref = source_ref_for(repo, ref)
         job = f"{remote}--{project}--{time.strftime('%Y%m%d-%H%M%S')}--{uuid.uuid4().hex[:8]}"
         if not JOB_ID.fullmatch(job):
@@ -294,8 +325,8 @@ def controller(args: argparse.Namespace) -> None:
         return
 
     if args.action == "prune":
-        if args.success_days < 0 or args.failure_days < 0:
-            fail("retention periods must be non-negative")
+        retention_days(args.success_days, "--success-days")
+        retention_days(args.failure_days, "--failure-days")
         result = invoke_worker(
             args.remote, "prune", "--success-days", str(args.success_days),
             "--failure-days", str(args.failure_days),
@@ -359,6 +390,8 @@ def availability_worker(jobs_root: Path, max_jobs: int) -> None:
 
 def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
                  args: argparse.Namespace) -> None:
+    retention_days(args.success_days, "--success-days")
+    retention_days(args.failure_days, "--failure-days")
     now = time.time()
     candidates: list[dict[str, object]] = []
     for metadata_path in sorted(jobs_root.glob("*/metadata.json")):
@@ -380,11 +413,16 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
         # Identify the job, its worktree and its project from the directory the
         # runner created, not from metadata a job can rewrite.
         project = metadata.get("project")
+        cache = metadata.get("cache")
+        valid_project = project if isinstance(project, str) and PROJECT_ID.fullmatch(project) else None
+        valid_cache = cache if isinstance(cache, str) and PROJECT_ID.fullmatch(cache) else None
         candidates.append({
             "job": job_dir.name, "state": state,
             "age_days": round(age_days, 1), "size_bytes": size,
             "worktree": str(job_dir / "worktree"),
-            "project": project if isinstance(project, str) and PROJECT_ID.fullmatch(project) else None,
+            "project": valid_project,
+            # Jobs recorded before caches were keyed by origin used the project directory.
+            "cache": valid_cache or valid_project,
         })
 
     if args.apply:
@@ -393,9 +431,9 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
             job = str(item["job"])
             job_dir = jobs_root / job
             worktree = item.get("worktree")
-            project = item.get("project")
-            if isinstance(worktree, str) and isinstance(project, str):
-                bare = projects_root / project / "repo.git"
+            cache = item.get("cache")
+            if isinstance(worktree, str) and isinstance(cache, str):
+                bare = projects_root / cache / "repo.git"
                 if bare.is_dir():
                     subprocess.run(
                         ["git", "--git-dir", str(bare), "worktree", "remove", "--force", worktree],
@@ -448,17 +486,23 @@ def worker(args: argparse.Namespace) -> None:
         command = unb64(args.command)
         if not PROJECT_ID.fullmatch(project):
             fail("project ID contains unsupported characters")
-        bare = projects_root / project / "repo.git"
+        if not SOURCE_URL.fullmatch(source_url):
+            fail("source URL must be https://, ssh:// or scp-style user@host:path")
+        # The object cache is keyed by project and origin, so two repositories that
+        # claim the same project ID cannot share, or repoint, one another's objects.
+        cache = f"{project}-{hashlib.sha256(source_url.encode()).hexdigest()[:12]}"
+        bare = projects_root / cache / "repo.git"
         bare.parent.mkdir(parents=True, exist_ok=True)
         if not bare.exists():
             run(["git", "init", "--bare", str(bare)])
-            run(["git", "-C", str(bare), "remote", "add", "origin", source_url])
+            run(["git", "-C", str(bare), "remote", "add", "--", "origin", source_url])
         else:
-            run(["git", "-C", str(bare), "remote", "set-url", "origin", source_url])
+            run(["git", "-C", str(bare), "remote", "set-url", "--", "origin", source_url])
         try:
             run([
-                "git", "-C", str(bare), "fetch", "--prune", "origin",
-                source_ref or args.commit,
+                "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+                "-c", "protocol.ssh.allow=always", "-C", str(bare),
+                "fetch", "--prune", "origin", source_ref or args.commit,
             ])
             run(["git", "-C", str(bare), "cat-file", "-e", f"{args.commit}^{{commit}}"])
         except subprocess.CalledProcessError:
@@ -489,7 +533,7 @@ def worker(args: argparse.Namespace) -> None:
                 stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
             )
         metadata = {
-            "job": args.job, "project": project, "commit": args.commit,
+            "job": args.job, "project": project, "cache": cache, "commit": args.commit,
             "source_ref": source_ref, "dut_commit": dut_commit, "dut_clean": dut_clean,
             "command": command, "created_at": time.time(), "pid": process.pid,
             "state": "RUNNING", "worktree": str(worktree), "log": str(log),

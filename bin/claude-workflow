@@ -132,6 +132,7 @@ def removal_targets(root, paths, recursive):
         raise ValueError("at least one exact project-relative path is required")
     targets = []
     selected = []
+    selected_identities = []
     git_dirs = git_metadata_dirs(root)
     for raw in paths:
         path = Path(raw)
@@ -159,6 +160,14 @@ def removal_targets(root, paths, recursive):
         # (an alias into a nested repository), is Git metadata.
         if names_git_component(relative_parent) or inside_git_metadata(parent, git_dirs):
             raise ValueError("refusing to remove Git metadata")
+        # Overlap is judged on resolved identities, so two spellings of one file
+        # (a path and the same path through a symlinked directory) cannot both be
+        # accepted and leave a partial deletion behind.
+        identity = parent / target.name
+        if any(identity == other or other in identity.parents or identity in other.parents
+               for other in selected_identities):
+            raise ValueError(f"overlapping removal targets are not allowed: {normalized}")
+        selected_identities.append(identity)
         if target.is_symlink():
             kind = "symlink"
         else:

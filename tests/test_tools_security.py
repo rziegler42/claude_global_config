@@ -7,6 +7,7 @@ Every test uses throwaway directories, a fake `ssh` that only records its
 arguments, and preview-only or in-tree operations; nothing outside the
 temporary directories is touched and nothing is sent to a real host.
 """
+import base64
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -99,6 +100,14 @@ class RemoveGuard(unittest.TestCase):
             CW.removal_targets(other, ["meta"], True)
         self.assertEqual(CW.removal_targets(other, ["keep.txt"], False)[0][2], "file")
 
+    def test_two_spellings_of_one_file_are_an_overlap(self):
+        (self.root / "self").symlink_to(".")
+        with self.assertRaisesRegex(ValueError, "overlapping"):
+            CW.removal_targets(self.root, ["a.txt", "self/a.txt"], False)
+        # distinct files are still fine together
+        (self.root / "b.txt").write_text("b\n")
+        self.assertEqual(len(CW.removal_targets(self.root, ["a.txt", "b.txt"], False)), 2)
+
     def test_the_symlink_itself_may_be_removed(self):
         targets = CW.removal_targets(self.root, ["gitlink"], False)
         self.assertEqual([(name, kind) for name, _, kind in targets], [("gitlink", "symlink")])
@@ -179,6 +188,44 @@ class ControllerInjection(unittest.TestCase):
         self.assertIn("/tmp/a b;c", remote_args)
         self.assertIn("a;touch F;#--1", remote_args)
 
+    def test_capability_requirements_fail_closed(self):
+        config = {"capabilities": {"os": "linux", "memory_gib": 8, "cpu_cores": 4, "labels": ["a"]}}
+        bad = [
+            {"min_memory_gib": "64"},   # wrong type
+            {"min_memroy_gib": 64},     # misspelled key
+            {"min_cpu_cores": True},    # bool is not a number
+            {"os": 5},                  # wrong type
+            {"min_memory_gib": 64},     # genuinely too big
+        ]
+        for requirements in bad:
+            with self.subTest(requirements=requirements):
+                self.assertTrue(RR.capability_mismatches(config, requirements))
+        good = {"os": "linux", "min_memory_gib": 4, "min_cpu_cores": 2, "labels": ["a"]}
+        self.assertEqual(RR.capability_mismatches(config, good), [])
+
+    def test_retention_periods_must_be_finite_and_non_negative(self):
+        for bad in (float("nan"), float("inf"), float("-inf"), -1.0):
+            with self.subTest(value=bad):
+                with self.assertRaises(SystemExit):
+                    RR.retention_days(bad, "--x")
+        self.assertEqual(RR.retention_days(0.0, "--x"), 0.0)
+        self.assertEqual(RR.retention_days(7.5, "--x"), 7.5)
+
+    def test_source_urls_are_restricted_to_ordinary_transports(self):
+        for good in ("https://github.com/x/y.git", "ssh://git@host/x/y.git", "git@github.com:x/y.git"):
+            with self.subTest(url=good):
+                self.assertTrue(RR.SOURCE_URL.fullmatch(good))
+        for bad in ("-oProxyCommand=x", "--upload-pack=x", "ext::sh -c id", "file:///etc",
+                    "/srv/x.git", "https://h/x y", "git://h/x.git", "https://h/x\nreset"):
+            with self.subTest(url=bad):
+                self.assertFalse(RR.SOURCE_URL.fullmatch(bad))
+
+    def test_option_like_refs_are_rejected_before_git_sees_them(self):
+        args = RR.parser().parse_args(["submit", "--remote", "r1", "--profile", "p", "--ref=-x"])
+        with mock.patch.object(RR, "repository_root", return_value=self.root):
+            with self.assertRaises(SystemExit):
+                RR.controller(args)
+
     def test_hostile_project_never_reaches_ssh(self):
         home = self.base / "home"
         (home / ".claude").mkdir(parents=True)
@@ -242,6 +289,40 @@ class WorkerTrustsItsOwnDirectories(unittest.TestCase):
         metadata = json.loads((directory / "metadata.json").read_text())
         RR.refresh_state(metadata, directory / "metadata.json")
         self.assertEqual(metadata["state"], "FAILED")
+
+    def test_worker_refuses_an_unsafe_source_url(self):
+        def b64(text):
+            return base64.urlsafe_b64encode(text.encode()).decode()
+        with self.assertRaises(SystemExit):
+            self.run_worker("--worker", "submit", "--job", "j-1", "--project", b64("proj"),
+                            "--source-url", b64("file:///etc"), "--commit", "0" * 40,
+                            "--command", b64("true"))
+        self.assertFalse((self.ws / "jobs" / "j-1").exists())
+
+    def test_prune_with_non_finite_retention_deletes_nothing(self):
+        self.job("recent", {"state": "FAILED", "created_at": time.time()})
+        for value in ("nan", "inf"):
+            with self.subTest(value=value):
+                with self.assertRaises(SystemExit):
+                    self.run_worker("--worker", "prune", "--apply", "--success-days", "7",
+                                    "--failure-days", value)
+        self.assertTrue((self.ws / "jobs" / "recent").exists())
+
+    def test_prune_never_acts_on_a_worktree_or_project_named_in_metadata(self):
+        precious = self.ws / "precious"
+        precious.mkdir()
+        (precious / "keepme").write_text("k\n")
+        directory = self.job("J1", {
+            "state": "FAILED", "created_at": 0, "project": "../jobs/J1/evil",
+            "cache": "../jobs/J1/evil", "worktree": str(precious)})
+        (directory / "evil" / "repo.git").mkdir(parents=True)
+        with mock.patch.object(RR.subprocess, "run") as run:
+            self.run_worker("--worker", "prune", "--apply", "--success-days", "7", "--failure-days", "1")
+        touched = " ".join(str(part) for call in run.call_args_list for part in call[0][0])
+        self.assertNotIn(str(precious), touched)
+        self.assertNotIn("evil", touched)
+        self.assertTrue((precious / "keepme").exists())
+        self.assertFalse(directory.exists())  # the expired job itself is still pruned
 
     def test_forged_pids_do_not_crash_the_runner(self):
         for name, pid in (("p-one", 1), ("p-bool", True), ("p-neg", -5), ("p-huge", 10 ** 20)):
