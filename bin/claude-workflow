@@ -60,6 +60,33 @@ def validate_subject(value):
         raise ValueError("subject must be one non-empty line")
 
 
+TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S[^\r\n\0]*$")
+
+
+def message_paragraphs(subject_line, body, trailers):
+    """Validate the optional body and trailers and return the commit message paragraphs."""
+    validate_subject(subject_line)
+    paragraphs = [subject_line]
+    if body is not None:
+        if not body.strip() or "\0" in body or "\r" in body:
+            raise ValueError("body must be non-empty text without NUL or carriage returns")
+        paragraphs.append(body.strip("\n"))
+    for trailer in trailers or []:
+        if not TRAILER.match(trailer):
+            raise ValueError(f"trailer must be one 'Key: value' line: {trailer!r}")
+    if trailers:
+        paragraphs.append("\n".join(trailers))
+    return paragraphs
+
+
+def message_args(paragraphs):
+    return [item for paragraph in paragraphs for item in ("-m", paragraph)]
+
+
+def full_message(root):
+    return run(["git", "show", "-s", "--format=%B", "HEAD"], root).stdout.rstrip("\n")
+
+
 def validate_paths(root, paths):
     if not paths:
         raise ValueError("at least one exact path is required")
@@ -737,51 +764,64 @@ def graph_validate_chunk(root, raw_path):
 
 def commit(args):
     root = git_root(Path.cwd())
-    validate_subject(args.subject)
+    paragraphs = message_paragraphs(args.subject, args.body, args.trailer)
+    expected_message = "\n\n".join(paragraphs)
     if head(root) != args.expected_head:
         raise RuntimeError("HEAD changed; refusing commit")
-    if names(root, cached=True):
-        raise RuntimeError("index is not empty; refusing to alter pre-existing staged work")
+    pre_staged = names(root, cached=True)
+    if pre_staged and not args.leave_other_staged:
+        raise RuntimeError("index is not empty; refusing to alter pre-existing staged work "
+                           "(pass --leave-other-staged to commit only the exact paths and keep it staged)")
     normalized = validate_paths(root, args.paths)
     eligible = set(normalized)
-    run(["git", "diff", "--check"], root)
+    if pre_staged & eligible:
+        raise RuntimeError(f"eligible paths already have staged changes: {sorted(pre_staged & eligible)}")
+    scope = ["--", *normalized] if pre_staged else []
+    run(["git", "diff", "--check", *scope], root)
     try:
         run(["git", "add", "--", *normalized], root)
-        staged = names(root, cached=True)
+        staged = names(root, cached=True) - pre_staged
         if not staged or staged != eligible:
             raise RuntimeError(f"staged paths differ from eligible paths: {sorted(staged)}")
-        run(["git", "diff", "--cached", "--check"], root)
-        result = run(["git", "commit", "-m", args.subject], root)
+        run(["git", "diff", "--cached", "--check", *scope], root)
+        only = ["--only", "--", *normalized] if pre_staged else []
+        result = run(["git", "commit", *message_args(paragraphs), *only], root)
     except Exception:
         if head(root) == args.expected_head:
             run(["git", "reset", "--mixed", "HEAD", "--", *normalized], root, check=False)
         raise
-    actual = subject(root)
-    if actual != args.subject:
-        raise RuntimeError(f"commit subject mismatch: {actual!r}")
+    actual = full_message(root)
+    if actual != expected_message:
+        raise RuntimeError(f"commit message mismatch: {actual!r}")
+    committed = {item for item in run(
+        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD"], root
+    ).stdout.split("\0") if item}
+    if committed != eligible or names(root, cached=True) != pre_staged:
+        raise RuntimeError(f"commit contents differ from the eligible paths: {sorted(committed)}")
     post = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root, check=False)
     try:
         graphify_result = json.loads(post.stdout.strip())
     except (TypeError, ValueError):
         graphify_result = {"graphify_post_commit": "failed", "detail":
                            (post.stdout.strip() or post.stderr.strip() or "no result")[-500:]}
-    emit("committed", commit=head(root), subject=actual, paths=sorted(staged),
+    emit("committed", commit=head(root), subject=subject(root), paths=sorted(staged),
+         left_staged=sorted(pre_staged),
          hook_output=result.stdout.strip()[-500:], graphify=graphify_result)
 
 
 def amend(args):
     root = git_root(Path.cwd())
-    validate_subject(args.subject)
+    paragraphs = message_paragraphs(args.subject, args.body, args.trailer)
     old_hash, old_subject = head(root), subject(root)
     if old_hash != args.expected_head:
         raise RuntimeError("HEAD changed; refusing amend")
     if names(root, cached=True):
         raise RuntimeError("index is not empty; refusing content-changing amend")
-    run(["git", "commit", "--amend", "-m", args.subject], root)
-    actual = subject(root)
-    if actual != args.subject:
-        raise RuntimeError(f"amended subject mismatch: {actual!r}")
-    emit("amended", old_commit=old_hash, new_commit=head(root), old_subject=old_subject, subject=actual)
+    run(["git", "commit", "--amend", *message_args(paragraphs)], root)
+    actual = full_message(root)
+    if actual != "\n\n".join(paragraphs):
+        raise RuntimeError(f"amended message mismatch: {actual!r}")
+    emit("amended", old_commit=old_hash, new_commit=head(root), old_subject=old_subject, subject=subject(root))
 
 
 def main():
@@ -790,10 +830,15 @@ def main():
     commit_p = sub.add_parser("commit")
     commit_p.add_argument("--expected-head", required=True)
     commit_p.add_argument("--subject", required=True)
+    commit_p.add_argument("--body")
+    commit_p.add_argument("--trailer", action="append", default=[])
+    commit_p.add_argument("--leave-other-staged", action="store_true")
     commit_p.add_argument("paths", nargs="+")
     amend_p = sub.add_parser("amend-message")
     amend_p.add_argument("--expected-head", required=True)
     amend_p.add_argument("--subject", required=True)
+    amend_p.add_argument("--body")
+    amend_p.add_argument("--trailer", action="append", default=[])
     remove_p = sub.add_parser("remove")
     remove_p.add_argument("--recursive", action="store_true")
     remove_p.add_argument("--confirm", action="store_true")
