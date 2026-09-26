@@ -16,4 +16,6 @@ skills/graphify-workflow/scripts/finalize.py
 skills/graphify-workflow/scripts/post_commit.py
 skills/graphify-workflow/scripts/prepare.py
 skills/security-review/SKILL.md
+skills/verilog-sby-formal/SKILL.md
+skills/verilog-sby-formal/reference.md
 
