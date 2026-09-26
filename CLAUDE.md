@@ -80,6 +80,11 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   inspection might miss affected paths. Skip it for narrow work with known
   files, isolated tests or documentation, mechanical changes, or an active plan
   that already enumerates the complete file scope.
+- Use `verilog-sby-formal` for SymbiYosys (`sby`) harnesses, `.sby` tasks,
+  induction failures, a cover that never reaches its goal, or any request to add
+  an `assume` (for example forcing a push or an opcode), raise a depth, or
+  otherwise make a proof pass or a cover reach, before answering from general
+  knowledge.
 - Use `architecture-decisions` for durable design choices or ADR requests.
 - For changes that materially affect authentication, authorization, secrets, untrusted input, parsing, filesystem/subprocess execution, network boundaries, dependencies, CI permissions, or deployment, use the `security-review` skill and include an adversarial verification when practical.
 - Delegate only bounded work that benefits from isolation. Use `implementer` for an approved implementation slice, `workflow-reviewer` for independent material-risk review, `technical-researcher` for current external evidence, `graphify-semantic` only through the Graphify skill, and `safe-committer` only after an explicit commit request.
