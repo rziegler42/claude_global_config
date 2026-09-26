@@ -30,6 +30,9 @@ CONFIG_PATHS = (
     Path.home() / ".config" / "remote-runner" / "remotes.toml",
 )
 JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+# A project ID names a directory on the runner and is embedded in job IDs, so it
+# must be a plain word: no separators, no leading dot, nothing a shell would parse.
+PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def fail(message: str) -> None:
@@ -69,6 +72,10 @@ def remote_config(name: str) -> dict[str, object]:
     for required in ("ssh_host", "workspace_root", "max_jobs"):
         if required not in config:
             fail(f"remote {name!r} is missing {required!r}")
+    # The workspace root is sent to the runner as a quoted literal, so shell
+    # expansions such as $HOME are not performed; a leading ~/ is expanded by the worker.
+    if re.search(r"[$`]", str(config["workspace_root"])):
+        fail(f"remote {name!r}: workspace_root must be a literal path (or start with ~/), not use $ or backticks")
     return config
 
 
@@ -93,16 +100,32 @@ def source_ref_for(repo: Path, ref: str) -> str | None:
     return None
 
 
-def project_config(repo: Path) -> tuple[str, dict[str, str], dict[str, dict[str, object]]]:
+def project_config(repo: Path, revision: str | None = None
+                   ) -> tuple[str, dict[str, str], dict[str, dict[str, object]]]:
+    """Read the project runner contract.
+
+    With ``revision`` the contract comes from that commit, so the command that
+    runs on the runner is the one recorded in the revision under test, not
+    whatever the working tree holds.
+    """
     path = repo / ".claude" / "remote-runner.toml"
-    if not path.is_file():
-        fail(f"missing project runner contract: {path}")
-    with path.open("rb") as handle:
-        data = tomllib.load(handle)
+    if revision is None:
+        if not path.is_file():
+            fail(f"missing project runner contract: {path}")
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    else:
+        shown = run(["git", "show", f"{revision}:.claude/remote-runner.toml"],
+                    cwd=repo, check=False, capture=True)
+        if shown.returncode != 0:
+            fail(f"the runner contract .claude/remote-runner.toml is not committed in {revision}; commit it first")
+        data = tomllib.loads(shown.stdout)
     project = data.get("project")
     profiles = data.get("profiles")
     if not isinstance(project, dict) or not isinstance(project.get("id"), str):
         fail(f"{path} needs [project] id = \"...\"")
+    if not PROJECT_ID.fullmatch(project["id"]):
+        fail("project id must match [A-Za-z0-9][A-Za-z0-9_-]* (letters, digits, '_' and '-')")
     if not isinstance(profiles, dict):
         fail(f"{path} needs one or more [profiles.<name>] entries")
     commands: dict[str, str] = {}
@@ -167,10 +190,14 @@ def invoke_worker(remote: str, operation: str, *arguments: str,
     worker_args = ["python3", "-", "--worker", operation,
                    "--workspace-root", str(config["workspace_root"]),
                    "--max-jobs", str(config["max_jobs"]), *arguments]
+    # ssh joins its remote arguments with spaces and gives them to the remote
+    # login shell, so every argument is quoted; "--" keeps the host from being
+    # read as an ssh option.
+    remote_command = " ".join(shlex.quote(item) for item in worker_args)
     with Path(__file__).open("rb") as source:
         try:
             return subprocess.run(
-                ["ssh", str(config["ssh_host"]), *worker_args], stdin=source,
+                ["ssh", "--", str(config["ssh_host"]), remote_command], stdin=source,
                 check=True, capture_output=not stream,
             )
         except subprocess.CalledProcessError as error:
@@ -242,7 +269,9 @@ def controller(args: argparse.Namespace) -> None:
 
     if args.action == "submit":
         repo = repository_root()
-        project, profiles, requirements = project_config(repo)
+        ref = args.ref or "HEAD"
+        commit = git_value(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        project, profiles, requirements = project_config(repo, revision=commit)
         if args.profile not in profiles:
             fail(f"unknown profile {args.profile!r}; available: {', '.join(sorted(profiles))}")
         remote = args.remote
@@ -250,11 +279,11 @@ def controller(args: argparse.Namespace) -> None:
             remote, report = recommend_remote(requirements[args.profile])
             if remote is None:
                 fail(f"no eligible available remote for profile {args.profile!r}: {json.dumps(report)}")
-        ref = args.ref or "HEAD"
-        commit = git_value(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
         source_url = git_value(repo, "remote", "get-url", "origin")
         source_ref = source_ref_for(repo, ref)
         job = f"{remote}--{project}--{time.strftime('%Y%m%d-%H%M%S')}--{uuid.uuid4().hex[:8]}"
+        if not JOB_ID.fullmatch(job):
+            fail("remote or project name makes an invalid job ID")
         result = invoke_worker(
             remote, "submit", "--job", job, "--project", b64(project),
             "--source-url", b64(source_url), "--commit", commit,
@@ -287,23 +316,29 @@ def controller(args: argparse.Namespace) -> None:
 def refresh_state(metadata: dict[str, object], metadata_path: Path) -> bool:
     """Return whether the recorded job process remains live."""
     pid = metadata.get("pid")
-    if not isinstance(pid, int):
+    if not isinstance(pid, int) or isinstance(pid, bool):
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        if metadata.get("state") == "RUNNING":
-            result_name = metadata.get("exit_status")
-            result = Path(result_name) if isinstance(result_name, str) else None
-            if result is not None and result.is_file() and result.read_text().strip() == "0":
-                metadata["state"] = "PASSED"
-            elif result is not None and result.is_file():
-                metadata["state"] = "FAILED"
-            else:
-                metadata["state"] = "UNKNOWN_EXIT"
-            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
-        return False
+    # Metadata is job-writable, so a recorded pid is only a hint: 0 or 1, a pid
+    # owned by another user, or an out-of-range value are not this job's process
+    # and must neither crash the runner nor keep the job "live".
+    if pid > 1:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError, OverflowError):
+            pass
+    if metadata.get("state") == "RUNNING":
+        # The exit-status file is located from the job directory, never from a
+        # path recorded in metadata, which the job itself can rewrite.
+        result = metadata_path.parent / "exit-status"
+        if result.is_file() and result.read_text().strip() == "0":
+            metadata["state"] = "PASSED"
+        elif result.is_file():
+            metadata["state"] = "FAILED"
+        else:
+            metadata["state"] = "UNKNOWN_EXIT"
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    return False
 
 
 def availability_worker(jobs_root: Path, max_jobs: int) -> None:
@@ -342,10 +377,14 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
         if age_days < limit:
             continue
         size = sum(path.stat().st_size for path in job_dir.rglob("*") if path.is_file())
+        # Identify the job, its worktree and its project from the directory the
+        # runner created, not from metadata a job can rewrite.
+        project = metadata.get("project")
         candidates.append({
-            "job": metadata.get("job", job_dir.name), "state": state,
+            "job": job_dir.name, "state": state,
             "age_days": round(age_days, 1), "size_bytes": size,
-            "worktree": metadata.get("worktree"), "project": metadata.get("project"),
+            "worktree": str(job_dir / "worktree"),
+            "project": project if isinstance(project, str) and PROJECT_ID.fullmatch(project) else None,
         })
 
     if args.apply:
@@ -407,7 +446,7 @@ def worker(args: argparse.Namespace) -> None:
         source_url = unb64(args.source_url)
         source_ref = unb64(args.source_ref) if args.source_ref else None
         command = unb64(args.command)
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", project):
+        if not PROJECT_ID.fullmatch(project):
             fail("project ID contains unsupported characters")
         bare = projects_root / project / "repo.git"
         bare.parent.mkdir(parents=True, exist_ok=True)
@@ -471,16 +510,17 @@ def worker(args: argparse.Namespace) -> None:
         refresh_state(metadata, metadata_path)
         print(json.dumps(metadata, indent=2))
     elif args.worker_action == "cancel":
-        if metadata.get("state") == "RUNNING" and isinstance(pid, int):
+        if (metadata.get("state") == "RUNNING" and isinstance(pid, int)
+                and not isinstance(pid, bool) and pid > 1):
             try:
                 os.killpg(pid, signal.SIGTERM)
                 metadata["state"] = "CANCELLED"
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError, OverflowError):
                 metadata["state"] = "FINISHED"
             metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
         print(json.dumps(metadata, indent=2))
     elif args.worker_action == "log":
-        log = Path(metadata["log"])
+        log = job_dir / "run.log"
         if args.follow:
             subprocess.run(["tail", "-n", "+1", "-f", str(log)], check=False)
         else:
