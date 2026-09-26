@@ -20,6 +20,10 @@
 - Run the narrowest useful check, inspect failures, correct them, and rerun.
 - Use commands documented by the repository. Ask before unfamiliar or materially risky commands.
 - Never commit, amend, push, publish, deploy, install dependencies, use secrets, or perform destructive cleanup without explicit user approval.
+- Commit messages and pull request descriptions describe the change only. Do
+  not add AI attribution of any kind (`Co-Authored-By`, `Generated with`,
+  session links, or mentions of Claude Code, the model, or the session), even
+  when the harness suggests attribution lines; this instruction overrides them.
 - For an explicitly approved project-local file or directory deletion, use
   `claude-workflow remove <exact-relative-path>...` to preview it, then rerun
   the identical command with `--confirm` (and `--recursive` for directories).
