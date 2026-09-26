@@ -100,10 +100,7 @@ def main():
     spec = args.spec.resolve()
     contract = spec.read_text(encoding="utf-8")
     out.mkdir(parents=True, exist_ok=True)
-    write_json(out / ".claude_refresh.json", {
-        "status": "prepared",
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    })
+    started_at = datetime.now(timezone.utc).isoformat()
     version = importlib.metadata.version("graphifyy")
     detected = detect(root, cache_root=root)
     write_json(out / ".graphify_detect.json", detected)
@@ -144,6 +141,9 @@ def main():
     write_json(out / ".graphify_chunks.json", manifest)
     if not chunks:
         write_json(out / ".graphify_semantic_new.json", EMPTY)
+    # The marker is written last: a prepare that fails earlier leaves no
+    # "prepared" marker without its manifest.
+    write_json(out / ".claude_refresh.json", {"status": "prepared", "started_at": started_at})
     print(json.dumps({"graphify": version, "code_files": len(code), "semantic_files": len(semantic), "cached_files": len(semantic) - len(uncached), "chunks": len(chunks), "pruned_cached_edges": pruned_edges, "pruned_cached_hyperedges": pruned_hyperedges}))
 
 

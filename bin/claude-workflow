@@ -141,24 +141,41 @@ def remove_paths(root, paths, recursive, confirm):
 
 
 def graph_script(name):
-    path = Path.home() / ".claude" / "skills" / "graphify-workflow" / "scripts" / name
-    if not path.is_file():
-        raise RuntimeError(f"Graphify workflow script missing: {path}")
-    return path
+    # Prefer the skill next to this helper (the installed ~/.claude layout and the
+    # mirror repository layout are both bin/ beside skills/), then the installed one.
+    candidates = [Path(__file__).resolve().parents[1], Path.home() / ".claude"]
+    for base in candidates:
+        path = base / "skills" / "graphify-workflow" / "scripts" / name
+        if path.is_file():
+            return path
+    raise RuntimeError(f"Graphify workflow script missing: {candidates[-1] / 'skills' / 'graphify-workflow' / 'scripts' / name}")
 
 
 def changed_paths(root, base):
+    """Return paths changed between base and HEAD, or None when base cannot be resolved."""
     result = run(["git", "diff", "--name-only", "-z", base, "HEAD"], root, check=False)
-    return {item for item in result.stdout.split("\0") if item} if result.returncode == 0 else set()
+    return {item for item in result.stdout.split("\0") if item} if result.returncode == 0 else None
 
 
 def dirty_paths(root):
     result = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], root, check=False)
     paths = set()
     if result.returncode == 0:
-        for item in result.stdout.split("\0"):
-            if item:
-                paths.add(item[3:] if len(item) > 3 else item)
+        tokens = result.stdout.split("\0")
+        index = 0
+        while index < len(tokens):
+            item = tokens[index]
+            index += 1
+            if not item:
+                continue
+            paths.add(item[3:] if len(item) > 3 else item)
+            # A rename or copy entry is followed by its original path, which has
+            # no status prefix.
+            if len(item) > 3 and (item[0] in "RC" or item[1] in "RC") and index < len(tokens):
+                original = tokens[index]
+                index += 1
+                if original:
+                    paths.add(original)
     return {path for path in paths if not path.startswith("graphify-out/")}
 
 
@@ -183,13 +200,27 @@ def graph_status_details(root):
         return {"status": "present", "graph": str(graph), "warning": "freshness metadata invalid"}
     paths = dirty_paths(root)
     recorded_head = state.get("head")
-    if recorded_head and recorded_head != head(root):
-        paths.update(changed_paths(root, recorded_head))
-    semantic = sorted(path for path in paths if Path(path).suffix.lower() in SEMANTIC_EXTENSIONS)
+    current_head = head(root)
+    # Code freshness is measured from the last code refresh (head); semantic
+    # freshness from the last full semantic refresh (semantic_head, falling back
+    # to head for state files written before it existed). A code-only commit
+    # advances head but must not hide earlier un-ingested semantic changes.
+    semantic_base = state.get("semantic_head") or recorded_head
+    code_paths = set(paths)
+    semantic_paths = set(paths)
+    for base, target in ((recorded_head, code_paths), (semantic_base, semantic_paths)):
+        if base and base != current_head:
+            changed = changed_paths(root, base)
+            if changed is None:
+                # An unresolvable baseline is unknown freshness, never current.
+                return {"status": "present", "graph": str(graph),
+                        "warning": f"freshness baseline commit is not resolvable: {base}"}
+            target.update(changed)
+    semantic = sorted(path for path in semantic_paths if Path(path).suffix.lower() in SEMANTIC_EXTENSIONS)
     if semantic:
         return {"status": "stale_semantic", "graph": str(graph), "changed": semantic[:20]}
-    if paths or recorded_head != head(root):
-        return {"status": "stale_code", "graph": str(graph), "changed": sorted(paths)[:20]}
+    if code_paths or recorded_head != current_head:
+        return {"status": "stale_code", "graph": str(graph), "changed": sorted(code_paths)[:20]}
     return {"status": "current", "graph": str(graph), "head": recorded_head,
             "generated_at": state.get("generated_at"), "graphify_version": state.get("graphify_version")}
 
@@ -255,6 +286,18 @@ def workflow_context(root):
 
 
 def graph_prepare(root, deep=False):
+    refresh = root / "graphify-out" / ".claude_refresh.json"
+    if refresh.is_file():
+        try:
+            in_progress = json.loads(refresh.read_text(encoding="utf-8")).get("status") == "prepared"
+        except (OSError, ValueError):
+            in_progress = True
+        if in_progress:
+            # A second prepare would overwrite the manifest and delete chunks that
+            # workers already wrote.
+            raise RuntimeError(
+                "a prepared refresh is already in progress; run graph-doctor and resume or "
+                "finalize it, or cancel it with graph-abort --confirm (refused once chunks exist)")
     spec = graph_script("../references/extraction-spec.md").resolve()
     command = [sys.executable, str(graph_script("prepare.py")), str(root), "--spec", str(spec)]
     if deep:
@@ -271,7 +314,7 @@ def graph_abort(root, confirm):
     refresh = out / ".claude_refresh.json"
     manifest_path = out / ".graphify_chunks.json"
     if not refresh.is_file():
-        emit("nothing_to_abort", graph=str(graph_file(root)))
+        emit("nothing_to_abort", graph=str(out / "graph.json"))
         return
     try:
         refresh_state = json.loads(refresh.read_text(encoding="utf-8"))
@@ -280,7 +323,11 @@ def graph_abort(root, confirm):
     if refresh_state.get("status") != "prepared":
         raise RuntimeError("refusing to abort a refresh that is not prepared")
     if not manifest_path.is_file():
-        raise RuntimeError("refusing to abort: prepared refresh manifest is missing")
+        # A prepare that failed before writing its manifest wrote no chunks, so
+        # nothing can be lost by clearing its marker.
+        refresh.unlink()
+        emit("aborted", graph=str(out / "graph.json"), discarded_chunks=0, note="prepared manifest was missing")
+        return
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -299,7 +346,7 @@ def graph_abort(root, confirm):
         raise RuntimeError("refusing to abort: semantic chunks exist; resume or finalize the refresh first")
     refresh.unlink()
     manifest_path.unlink()
-    emit("aborted", graph=str(graph_file(root)), discarded_chunks=len(outputs))
+    emit("aborted", graph=str(out / "graph.json"), discarded_chunks=len(outputs))
 
 
 def graph_doctor(root):
@@ -323,7 +370,7 @@ def graph_doctor(root):
             return
         if not manifest_path.is_file():
             emit("prepared_manifest_missing", graph=str(graph), viewer_present=viewer.is_file(),
-                 next_action="inspect the prepared refresh; do not remove its marker manually")
+                 next_action="claude-workflow graph-abort --confirm (no chunks can exist without a manifest), then graph-prepare again if a refresh is still wanted")
             return
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

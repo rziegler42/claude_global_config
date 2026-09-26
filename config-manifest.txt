@@ -12,9 +12,11 @@ bin/remote-runner
 skills/architecture-decisions/SKILL.md
 skills/graphify-workflow/SKILL.md
 skills/graphify-workflow/references/extraction-spec.md
+skills/graphify-workflow/references/refresh.md
 skills/graphify-workflow/scripts/finalize.py
 skills/graphify-workflow/scripts/post_commit.py
 skills/graphify-workflow/scripts/prepare.py
+skills/graphify-workflow/tests/test_workflow.py
 skills/security-review/SKILL.md
 skills/verilog-sby-formal/SKILL.md
 skills/verilog-sby-formal/reference.md

@@ -43,7 +43,7 @@ def committed_semantic_files(root):
     if result.returncode != 0:
         return [], "git_diff_failed"
     files = [name for name in result.stdout.split("\0") if name]
-    return sorted(name for name in files if Path(name).suffix in SEMANTIC_EXTENSIONS), None
+    return sorted(name for name in files if Path(name).suffix.lower() in SEMANTIC_EXTENSIONS), None
 
 
 def graph_counts(path):
@@ -73,6 +73,28 @@ def graph_delta(before, after):
         "after": after,
         "delta": {key: after[key] - before.get(key, 0) for key in after},
     }
+
+
+def record_code_refresh(root):
+    """Advance the code head without hiding un-ingested semantic changes.
+
+    semantic_head is the last commit whose documents were semantically ingested.
+    Pin it to the previous head before advancing head, so a later code-only
+    commit cannot make a graph with pending semantic changes look current.
+    """
+    head_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False)
+    state_path = root / "graphify-out" / ".claude_graph_state.json"
+    state = {}
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+    if state.get("head") and not state.get("semantic_head"):
+        state["semantic_head"] = state["head"]
+    state.update({"head": head_result.stdout.strip() if head_result.returncode == 0 else None,
+                  "generated_at": datetime.now(timezone.utc).isoformat()})
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def main():
@@ -135,22 +157,12 @@ def main():
 
     if result.returncode == 0:
         delta = graph_delta(before_counts, graph_counts(graph))
+        record_code_refresh(root)
         if semantic_files:
             record_result(marker, commit, "semantic_refresh_required", attempts=attempts, code_refresh="updated",
                           semantic_files=semantic_files, graph_delta=delta,
                           detection_warning=detection_error)
         else:
-            head_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False)
-            state_path = root / "graphify-out" / ".claude_graph_state.json"
-            state = {}
-            if state_path.is_file():
-                try:
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    state = {}
-            state.update({"head": head_result.stdout.strip() if head_result.returncode == 0 else None,
-                          "generated_at": datetime.now(timezone.utc).isoformat()})
-            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
             record_result(marker, commit, "updated", attempts=attempts, graph_delta=delta,
                           detection_warning=detection_error)
     else:

@@ -1,9 +1,9 @@
 ---
 name: graphify-workflow
-description: Query, build, refresh, or diagnose Graphify project graphs for
-  unfamiliar architecture, cross-cutting impact, or dependency analysis. Run
-  one bounded query when forming a substantive plan; skip narrow work with
-  documented rationale and routine work within an enumerated increment.
+description: Use when forming a substantive plan, investigating unfamiliar
+  architecture or ownership, tracing cross-component impact or dependencies,
+  or when asked to query, build, refresh, or diagnose the Graphify project
+  graph (`graphify-out/`, `claude-workflow graph-*`).
 ---
 
 # Graphify workflow
@@ -31,9 +31,10 @@ the plan.
 requesting approval, or changing its status to `Approved`, confirm it contains
 either a `## Graphify` receipt or the documented skip above. A receipt records
 graph freshness, the focused purpose, and the conclusion verified against
-current source; do not preserve raw output. A `stale_semantic` or `stale_code`
-graph may orient discovery but cannot supply that conclusion without direct
-verification and a recorded limitation.
+current source; do not preserve raw output. A graph with any status other than
+`current` (`stale_semantic`, `stale_code`, `present`, `refresh_in_progress`) may
+orient discovery but cannot supply that conclusion without direct verification
+and a recorded limitation.
 
 **Implementation:** Do not query Graphify for routine work inside an
 already-enumerated increment. Run one focused query if a cross-component
@@ -50,10 +51,21 @@ changes with known file scope.
 ## Query
 
 From the repository root, run `claude-workflow graph-status`. Treat anything
-except `current` as potentially stale. Ask about one relationship anchored on
-one component, symbol, document, or decision at a time. Do not combine
-ownership, dependencies, implementation files, tests, plans, and ADRs into one
-compound question. Start with exactly one focused operation:
+except `current` as potentially stale:
+
+| Status | Meaning and action |
+|---|---|
+| `current` | Graph matches the last refresh. |
+| `stale_code` | Code changed since the last refresh; orient with it, verify against source. |
+| `stale_semantic` | Documents changed and are not yet ingested; same as above. It persists across later code-only commits until a semantic refresh runs. |
+| `present` | Freshness metadata is missing or invalid, or its baseline commit no longer resolves (the warning says which); treat as stale. |
+| `refresh_in_progress` | A prepared refresh exists; run `graph-doctor` for the next action. |
+| `missing` | No graph. Queries fail. Do not build one automatically; rely on source inspection unless a build has value (see Build or refresh). |
+
+Ask about one relationship anchored on one component, symbol, document, or
+decision at a time. Do not combine ownership, dependencies, implementation
+files, tests, plans, and ADRs into one compound question. Start with exactly
+one focused operation:
 
 - impact: `claude-workflow graph-affected "<node>"`
 - component: `claude-workflow graph-explain "<node>"`
@@ -66,10 +78,25 @@ dependents or impact, and `graph-path` for a relationship between two known
 nodes. Use `graph-query` only for broad orientation when the correct anchor is
 not yet known.
 
+`graph-explain`, `graph-path`, and `graph-affected` have no token budget, and
+output must not be clipped. Bound them with their own options instead:
+`graph-affected --depth 1` and repeated `--relation <name>` (for example
+`calls`, `references`, `imports`, `uses`, `requires`) for a hub node, and
+`graph-query --context <filter>` (repeatable) or `--dfs` to steer a query.
+`graph-god-nodes` and `graph-benchmark` also exist but are not part of routine
+work; use them only when asked.
+
+No helper command produces a focused subgraph or community overview on demand;
+the finalizer writes only the refresh-time `graph.html`. If one is requested,
+report that it is unavailable instead of using vendor export commands.
+
 Use a second graph call only when the first exposes a material unresolved
 relationship. The normal one-query limit permits one automatic narrowing
-follow-up after a truncated result. Treat `[!] TRUNCATED` as incomplete output,
-not an error and not sufficient evidence for a conclusion:
+follow-up after a truncated result. Treat the leading `[!] TRUNCATED: showing X
+of Y nodes` line (also echoed as a trailing `... (truncated — N more nodes cut
+...)` line) as incomplete output, not an error and not sufficient evidence for
+a conclusion. Its `context_filter` hint is the helper's `--context` option; its
+`get_node` hint is not exposed, so use `graph-explain` instead:
 
 1. Do not answer from the partial traversal alone.
 2. Select one specific returned node as the next anchor.
@@ -108,51 +135,10 @@ impact-analysis value. After material architecture, ADR, or design-document
 changes, request a semantic refresh only if that change should be discoverable
 through the graph. Do not refresh merely because documentation changed.
 
-1. Run `claude-workflow graph-prepare` (`--deep` only when requested).
-2. Read `graphify-out/.graphify_chunks.json` once. It contains the complete
-   contract.
-3. If there are chunks, dispatch every chunk to the `graphify-semantic` agent,
-   preferably in parallel. Pass only its file list, exact output path, deep
-   flag, per-file size and SHA-256 records, and manifest contract. The worker
-   must read every assigned file in full, using paged reads through EOF when
-   necessary, and must not write a provisional chunk.
-4. Accept a worker handoff only when it returns exactly `COMPLETE <assigned-path>
-   coverage <N>/<N>` with the expected path and assigned-file count. An output
-   file without that completion report remains incomplete and must not be
-   validated or finalized. If a worker stops at its turn limit or returns
-   `INCOMPLETE`, resume that same worker with: `Continue the existing chunk
-   assignment. Determine which assigned files have not reached EOF, read all
-   remaining content using paged reads, and do not write or revise the chunk
-   until every assigned file is complete. Then write the assigned output and
-   return the required COMPLETE report.` Never instruct a worker to skip,
-   abbreviate, assume, or avoid re-reading source content.
-5. The parent validates each completed path with exactly
-   `claude-workflow graph-validate-chunk <assigned-path>`. If it fails, send the
-   exact failure to the original worker for one focused `Edit` of that same
-   path, then validate once more. A denied write, missing output, or second
-   validation failure stops the refresh without finalizing. Workers have no
-   shell access and may never use a script or Bash command to write a chunk.
-   Treat validator-reported counts as authoritative; ignore worker hand tallies.
-   Coverage validation proves exact prepared sources were acknowledged at their
-   prepared hashes, not that the semantic interpretation is complete.
-6. After every worker has returned a completion report and every chunk has
-   validated, run `claude-workflow graph-finalize` directly. Finalization must
-   refuse any missing, stale, structurally invalid, or coverage-incomplete
-   chunk.
-7. Report graph size and before/after delta, failed chunks, visualization mode,
-   and commands actually run. `graph.html` is current only when the finalizer
-   reports a generated visualization; otherwise consult `GRAPH_REPORT.md` and
-   `.claude_graph_visualization.json`, never a prior viewer.
-
-If a prepared refresh is abandoned before any assigned semantic chunk exists,
-cancel it only with `claude-workflow graph-abort --confirm`. It removes the
-prepared marker and its manifest, restoring ordinary graph status. It refuses
-to discard a refresh once any assigned chunk exists; then resume or finalize
-instead. Never remove refresh state or manifests manually.
-
-Do not independently rewrite worker output, reuse a failed old chunk, or ask
-for chunk JSON in chat. Parent-side validation is required; it is not an
-independent semantic rewrite.
+Before running `graph-prepare`, read `references/refresh.md` and follow it
+exactly: prepare, dispatch every chunk to the `graphify-semantic` agent,
+validate each chunk, then finalize. Never remove refresh state or manifests
+manually; use `claude-workflow graph-doctor` for the next safe action.
 
 ## After a commit
 
@@ -160,6 +146,8 @@ The guarded commit helper performs a best-effort local graph refresh and
 returns a structured Graphify result. Do not make a second post-commit call
 when that object exists. If a successful content-commit report lacks it, run
 `claude-workflow graph-post-commit` at most once. Deferred semantic refresh
-does not invalidate a successful commit.
+does not invalidate a successful commit. A `semantic_refresh_required` result
+keeps the graph `stale_semantic`, even after later code-only commits, until a
+semantic refresh finalizes.
 
 Treat `graphify-out/` as rebuildable local state; never stage or commit it automatically.

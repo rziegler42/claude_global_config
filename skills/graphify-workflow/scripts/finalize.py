@@ -114,8 +114,10 @@ def valid(data, allowed, expected_sources):
             return False
         node_ids.add(node["id"])
     for edge in data["edges"]:
+        if not isinstance(edge, dict):
+            return False
         confidence, score = edge.get("confidence"), edge.get("confidence_score")
-        if (not isinstance(edge, dict) or edge.get("source_file") not in allowed
+        if (edge.get("source_file") not in allowed
                 or not str(edge.get("relation", "")).strip() or not edge.get("source") or not edge.get("target")
                 or confidence not in {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
                 or not isinstance(score, (int, float))
@@ -125,6 +127,7 @@ def valid(data, allowed, expected_sources):
     for hyperedge in data["hyperedges"]:
         if (not isinstance(hyperedge, dict) or hyperedge.get("source_file") not in allowed
                 or not str(hyperedge.get("relation", "")).strip()
+                or not isinstance(hyperedge.get("nodes"), list)
                 or len(hyperedge.get("nodes", [])) < 3):
             return False
     return True
@@ -172,7 +175,7 @@ def main():
                 raise ValueError("schema, source scope, or coverage")
             good.append(data)
             sources.extend(chunk["files"])
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             failed.append({"chunk": chunk["number"], "error": str(exc)})
     if failed:
         raise SystemExit(
@@ -244,8 +247,10 @@ def main():
         save_semantic_cache(fresh["nodes"], fresh["edges"], fresh["hyperedges"], root=root, merge_existing=True, allowed_source_files=sources, prompt_file=args.spec.resolve())
     version = manifest.get("graphify_version")
     head_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False)
+    head_value = head_result.stdout.strip() if head_result.returncode == 0 else None
     state = {
-        "head": head_result.stdout.strip() if head_result.returncode == 0 else None,
+        "head": head_value,
+        "semantic_head": head_value,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "graphify_version": version,
     }
