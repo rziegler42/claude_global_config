@@ -369,6 +369,15 @@ def project_identity(root):
     return f"{root.name}@{initial[:12]}", "root_commit"
 
 
+def plan_status(text):
+    """Return the first `Status:` value of a plan document, or None."""
+    for line in text.splitlines():
+        match = re.match(r"^Status:\s*(.+?)\s*$", line)
+        if match:
+            return match.group(1)
+    return None
+
+
 def workflow_context(root):
     identity, identity_source = project_identity(root)
     branch = run(["git", "branch", "--show-current"], root, check=False).stdout.strip()
@@ -390,6 +399,7 @@ def workflow_context(root):
         guidance="AGENTS.md" if (root / "AGENTS.md").is_file() else None,
         decisions_index="docs/decisions/README.md" if decisions.is_file() else None,
         next_plan="docs/plans/next.md" if plans.is_file() else None,
+        next_plan_status=plan_status(plan_text),
         next_plan_has_unfinished=("- [ ]" in plan_text) if uses_checkboxes else None,
         plans_readme="docs/plans/README.md" if plans_readme.is_file() else None,
         legacy_plans="docs/plans/notes.md" if legacy_plans.is_file() else None,

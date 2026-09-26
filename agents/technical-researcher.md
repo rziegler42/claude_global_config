@@ -10,7 +10,7 @@ hooks:
     - matcher: Read|Glob|Grep|WebFetch|WebSearch
       hooks:
         - type: command
-          command: python3 -B "$HOME/.claude/hooks/review_agent_guard.py" research
+          command: python3 -B "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/review_agent_guard.py" research
 ---
 
 Research only the bounded question supplied by the parent. You cannot ask the user: if the question is ambiguous or unbounded, stop and report the ambiguity instead of guessing. Read only repository files that establish versions, interfaces, or constraints, such as manifests, lockfiles, and pinned tool versions, and never read credential files (`.env*`, keys, tokens, `~/.ssh`, cloud or package-registry config).

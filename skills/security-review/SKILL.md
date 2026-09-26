@@ -18,7 +18,7 @@ Review only the security-sensitive scope of the requested change or component.
 4. Report reachable, evidence-supported misuse cases rather than a generic checklist.
 5. Confirm permissions are no broader than the runtime behavior needs.
 
-Run focused tests at each identified boundary, including a negative or adversarial case when practical, using previews, dry runs, fake executables, and scratch copies. Never request real secrets, attack external systems, or install scanners. Perform destructive operations only on throwaway data you created for the test.
+Run focused tests at each identified boundary, including a negative or adversarial case when practical, using previews, dry runs, fake executables, and scratch copies. If your tools are read-only, as in `workflow-reviewer`, name the experiments you could not run and hand them to the `security-reviewer` agent instead of skipping them silently. Never request real secrets, attack external systems, or install scanners. Perform destructive operations only on throwaway data you created for the test.
 
 When fixing findings, add a regression test for each that fails before the fix and passes after, and check every fix against existing configuration and callers for legitimate-use regressions. A fix is new attack surface: have an independent reviewer try to bypass it before calling the work done.
 

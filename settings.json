@@ -35,9 +35,7 @@
       "Bash(claude-workflow graph-validate-chunk:*)",
       "Bash(claude-workflow graph-finalize:*)",
       "Bash(claude-workflow graph-post-commit:*)",
-      "Bash(claude-workflow remove:*)",
-      "Bash(claude-workflow commit:*)",
-      "Bash(claude-workflow amend-message:*)"
+      "Bash(claude-workflow commit:*)"
     ],
     "deny": [
       "Read(./.env)",

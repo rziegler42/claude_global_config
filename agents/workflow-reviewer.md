@@ -14,7 +14,7 @@ hooks:
     - matcher: Bash|Write|Edit
       hooks:
         - type: command
-          command: python3 -B "$HOME/.claude/hooks/review_agent_guard.py" reviewer
+          command: python3 -B "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/review_agent_guard.py" reviewer
 ---
 
 Review the supplied change against the user's request, repository instructions, relevant code/tests, and implementation evidence. Prefer the changed diff and supplied evidence over broad rediscovery.

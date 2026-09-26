@@ -62,7 +62,7 @@ class ReviewerBash(GuardCase):
             "git branch -a",
             "git config --get remote.origin.url",
             "ls -la && cat calc.py | head -20",
-            "grep -rn 'len(xs)' . 2>&1",
+            "rg -n 'len\\(xs\\)' . 2>&1",
             "grep -n foo file 2>/dev/null",
             "rg -n pattern src",
             "find . -name '*.py' -maxdepth 2",
@@ -170,6 +170,22 @@ class ReviewerBash(GuardCase):
         ]:
             with self.subTest(cmd=cmd):
                 self.assertDenied("reviewer", cmd)
+
+    def test_credential_reads_are_denied_but_ordinary_patterns_are_not(self):
+        for cmd in ["cat .env", "cat ./.env.local", "head -5 .env", "grep token ~/.ssh/config",
+                    "sed -n '1,5p' server.pem", "sort .env", "diff .env .env.example", "cat ~/.aws/credentials",
+                    "git show HEAD:.env", "git diff -- .env", "git log -p -- config/id_rsa",
+                    "grep -rn token .", "grep -R token src", "grep -irn token src", "grep --recursive x .",
+                    "grep -d recurse x .", "rg --hidden token", "rg -uu token", "rg -. token",
+                    "rg --no-ignore token", "rg -g '.env*' token", "rg --glob=.env token",
+                    "rg -g'*.pem' token", "rg token ~/.ssh", "cat ~/.netrc"]:
+            with self.subTest(cmd=cmd):
+                self.assertDenied("reviewer", cmd)
+        for cmd in ["grep -n credentials src/app.py", "rg -n 'secret_key' src", "rg -g '*.py' token",
+                    "git log --grep=credentials", "git show HEAD:src/app.py", "git diff -- src/app.py",
+                    "grep -n '\\.env' README.md"]:
+            with self.subTest(cmd=cmd):
+                self.assertAllowed("reviewer", cmd)
 
     def test_quoted_metacharacters_are_data(self):
         for cmd in [

@@ -48,6 +48,9 @@ SECRET_NAMES = {".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", "i
                 "id_ecdsa", "id_dsa", "credentials", "credentials.json", "secrets.json"}
 SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", "gcloud"}
 SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".tfstate")
+GLOB_SECRET_HINTS = (".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".ssh", ".aws", ".gnupg",
+                     ".kube", ".netrc", ".npmrc", ".pypirc", ".pgpass", "credentials", ".pem", ".key",
+                     ".p12", ".pfx", "tfstate", "secrets")
 MAX_QUERY = 200
 SED_SCRIPT_RE = re.compile(r"^(?:\d+|\$)?(?:,(?:\d+|\$))?p$")
 
@@ -206,6 +209,7 @@ def check_git(args, cwd, mode):
         if a.startswith("--output") or a in ("--ext-diff",):
             raise Deny("git option %s is not allowed" % a)
     if sub in GIT_READ:
+        check_read_args(rest, cwd)
         if sub == "grep" and any(a == "-O" or a.startswith("--open-files-in-pager") for a in rest):
             raise Deny("git grep pager execution is not allowed")
         return
@@ -273,10 +277,13 @@ def check_segment(words, cwd, mode):
     if cmd in READ_ONLY:
         if cmd == "tail" and any(a in ("-f", "-F", "--follow") for a in args):
             raise Deny("tail -f never returns")
+        if cmd == "grep" and (any(re.match(r"^-[A-Za-z]*[rR]", a) or a.startswith(("--recursive", "--dereference-recursive"))
+                                   or a == "recurse" or a.endswith("=recurse") for a in args)):
+            raise Deny("recursive grep reads hidden credential files; use rg, which skips them")
+        check_read_args(args, cwd)
         return cwd
     if cmd == "rg":
-        if any(a.startswith(("--pre", "--hostname-bin")) for a in args):
-            raise Deny("rg option runs a program")
+        check_rg(args, cwd)
         return cwd
     if cmd == "find":
         if any(a in FIND_DENIED for a in args):
@@ -287,9 +294,11 @@ def check_segment(words, cwd, mode):
             if (a.startswith("--output") or a.startswith("--compress-program")
                     or re.match(r"^-[A-Za-z]*o", a)):
                 raise Deny("sort option writes or executes")
+        check_read_args(args, cwd)
         return cwd
     if cmd == "sed":
         if len(args) >= 2 and args[0] == "-n" and SED_SCRIPT_RE.match(args[1]):
+            check_read_args(args[2:], cwd)
             return cwd
         raise Deny("sed is limited to: sed -n 'N,Mp' file")
     if cmd == "git":
@@ -354,6 +363,44 @@ def check_secret_path(path, cwd):
     if (name.startswith(".env") or name in SECRET_NAMES or name.endswith(SECRET_SUFFIXES)
             or any(part in SECRET_DIRS for part in parts[:-1] + [parts[-1]])):
         raise Deny("credential paths are off limits: %s" % path)
+
+
+def check_read_args(args, cwd):
+    """Refuse a read-only command whose arguments name a credential file or directory.
+
+    An argument counts as a path when it exists, contains a slash, starts with a dot, or
+    follows a colon (`HEAD:.env`), so a search pattern such as `credentials` is not mistaken
+    for one.
+    """
+    for arg in args:
+        candidates = [(arg, False)]
+        for sep in ("=", ":"):
+            if sep in arg:
+                candidates.append((arg.split(sep, 1)[1], sep == ":"))
+        for cand, from_colon in candidates:
+            if not cand or cand.startswith("-"):
+                continue
+            if (from_colon or "/" in cand or cand.startswith(".") or cand.startswith("~")
+                    or cand.lower().endswith(SECRET_SUFFIXES) or os.path.lexists(resolve(cand, cwd))):
+                check_secret_path(cand, cwd)
+
+
+def check_rg(args, cwd):
+    if any(a.startswith(("--pre", "--hostname-bin")) for a in args):
+        raise Deny("rg option runs a program")
+    for i, a in enumerate(args):
+        if a in ("--hidden", "--unrestricted") or a.startswith("--no-ignore") or re.match(r"^-[A-Za-z]*[u.]", a):
+            raise Deny("rg must respect hidden files and ignore rules")
+        value = None
+        if a in ("-g", "--glob", "--iglob") and i + 1 < len(args):
+            value = args[i + 1]
+        elif a.startswith(("--glob=", "--iglob=")):
+            value = a.split("=", 1)[1]
+        elif a.startswith("-g") and not a.startswith("--") and len(a) > 2:
+            value = a[2:]
+        if value is not None and any(hint in value.lower() for hint in GLOB_SECRET_HINTS):
+            raise Deny("rg glob names a credential file: %s" % value)
+    check_read_args(args, cwd)
 
 
 def check_url(url):

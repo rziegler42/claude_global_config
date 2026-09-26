@@ -12,10 +12,14 @@ downloads, synced skills, or other generated and machine-specific state.
 
 - `CLAUDE.md` — global engineering and safety policy.
 - `settings.json` — permissions and enabled-plugin preferences.
-- `agents/` — focused implementer, reviewer, researcher, committer, and
-  Graphify semantic agents.
-- `skills/` — architecture-decision, Graphify workflow, and security-review
-  skills maintained with this configuration.
+- `agents/` — focused implementer, read-only reviewer, adversarial
+  security-reviewer, researcher, committer, and Graphify semantic agents.
+- `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
+  reviewer, security-reviewer, and researcher agents (see below).
+- `skills/` — architecture-decision, Graphify workflow, security-review, and
+  Verilog/SymbiYosys formal-verification skills maintained with this
+  configuration.
+- `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
 - `config-manifest.txt` — the complete allowlist installed into `~/.claude`.
@@ -116,6 +120,37 @@ CLAUDE_CONFIG_DIR="$test_root/.claude" \
 LOCAL_BIN_DIR="$test_root/bin" \
 ./install.sh --check
 ```
+
+## Agent guard hook
+
+`hooks/review_agent_guard.py` enforces, outside the prompt, what the review
+agents may do. Each agent runs it as a `PreToolUse` hook in one mode:
+
+- `reviewer` (`workflow-reviewer`): Bash is limited to read-only inspection and
+  the repository's checks; Write and Edit are refused; credential files cannot
+  be read.
+- `security` (`security-reviewer`): the same, plus writes and script execution
+  confined to the session scratchpad, for experiments on copies.
+- `research` (`technical-researcher`): credential paths are refused, and web
+  fetches must be short https URLs without credentials.
+
+The guard is an allowlist over command text, not a sandbox: code an agent is
+allowed to run, such as a repository's tests, is not confined. Anything it does
+not recognize is denied. The hooks resolve the script through
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+
+## Testing
+
+Run the regression tests from the repository root:
+
+```sh
+python3 -B -m unittest discover -s tests
+python3 -B -m unittest discover -s skills/graphify-workflow/tests
+```
+
+Set `TOOLS_BIN` or `GUARD` to run the same tests against another copy of the
+tools or the guard. The Graphify end-to-end tests need the `graphify` CLI on
+`PATH`.
 
 ## Superpowers
 
