@@ -130,6 +130,8 @@ harness.v
 
 Run with `sby -f dut.sby prove`. `-f` deletes the previous task directory, including any counterexample in it: copy a trace you still need out first (or give the run its own directory with `-d`) before re-running. Traces are under the task directory `<file>_<task>/engine_0/`: `trace.vcd` for a `bmc` counterexample, `trace_induct.vcd` for a failed induction step, and `trace0.vcd` for a reached cover (with matching `*_tb.v` and `.yw` files). Use the repository's established engine in place of `yices` and record depth, timeout, and expected result per task.
 
+To prove a parameterized module across more than one configuration, add `-chparam NAME value` to the `hierarchy` line (`hierarchy -check -top dut -chparam WIDTH 8`) and give each configuration its own task with a `script:`-tagged override, rather than one task that only exercises the default parameter values.
+
 ## Deliberately broken fixture
 
 A separate task that must fail proves the harness really checks something. Guard a false assertion with a define, and give that task `expect fail` and the define:
@@ -183,6 +185,8 @@ When the repository defines any of the following, follow it; otherwise skip the 
 
 Apply these ideas as engineering guidance, adapted to the repository's actual contracts:
 
+- [SymbiYosys: quickstart guide](https://symbiyosys.readthedocs.io/en/latest/quickstart.html) — the tool's own reference: task tags including `:default`, `-noverific` to force the plain (non-SystemVerilog) Verilog frontend, and `hierarchy -chparam` for parameterized configurations. Prefer it over this skill for `.sby` syntax questions not covered here.
+- [YosysHQ: riscv-formal](https://github.com/YosysHQ/riscv-formal) — an instruction-set proof framework: a wrapper module isolates instruction semantics from microarchitecture behind a stable retirement interface (RVFI), and one templated check per instruction is generated from a shared script rather than hand-written per opcode. It also favors immediate assertions/assumptions throughout for tool compatibility, matching this skill's own preference. Adapt the isolation pattern for any instruction-set core; the RISC-V-specific interface itself does not apply outside RISC-V.
 - [ZipCPU: formal verification plan](https://zipcpu.com/formal/2020/07/21/formal-plan.html) — design-owned invariants, outstanding-work counters, and induction.
 - [ZipCPU: formal induction exercise](https://zipcpu.com/blog/2018/03/10/induction-exercise.html) — base versus induction and why initialization alone does not prove arbitrary states.
 - [ZipCPU: SBY Makefile workflow](https://zipcpu.com/zipcpu/2018/12/20/sby-makefile.html) — separate safety and cover tasks, automation, and avoiding vacuity.

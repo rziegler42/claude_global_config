@@ -40,6 +40,8 @@ Favor small, independent claims over a monolithic restatement of the RTL:
 
 For pipelines, queues, buses, and controllers, add ghost state that tracks the meaningful unit of work. A counter for outstanding work, a valid/id/data shadow, or an instruction packet carried through stages is often the missing inductive invariant. Check it at every ownership handoff. Prefer direct invariants that explain an induction failure over increasing the depth until it passes.
 
+For an instruction-set core, isolate instruction semantics from microarchitecture behind a stable interface (inputs, outputs, and a retirement/commit signal), then generate one templated check per instruction or opcode from a shared script rather than hand-duplicating the harness structure for each one; see the RVFI wrapper pattern in `reference.md`.
+
 Use immediate properties in procedural Verilog, typically inside `always @(posedge clk)`. Place a clear comment beside each property naming the contract it protects. Keep covers separate from safety assertions when their setup or depth differs.
 
 For logic that behaves differently by mode or opcode, scope one property to its case with an implication (`assert(i_sel_add -> (o_result == f_expected_sum));`) inside a shared `always` block, rather than a separate block per mode. The implication is vacuously true whenever the selector does not hold, so it adds no constraint outside its case.
