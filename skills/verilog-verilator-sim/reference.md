@@ -4,7 +4,7 @@ A minimal self-checking testbench, and sources.
 
 ## Minimal self-checking testbench
 
-Plain Verilog-2001, no `$fatal`/`$error`. The reference model is an unbounded counter truncated to width, not a second copy of the DUT's own wrap logic; the comparison samples on `negedge clk`, half a cycle after both the DUT and the reference model have settled their non-blocking updates, so there is no same-time-step race to reason about.
+Plain Verilog-2001, no `$fatal`/`$error`. The reference model is an unbounded counter truncated to width, not a second copy of the DUT's own wrap logic; the comparison samples on `negedge clk`, half a cycle after both the DUT and the reference model have settled their non-blocking updates, so there is no same-time-step race to reason about. `rst` is deasserted on a `negedge`, not immediately after the `@(posedge clk)` that ends the reset window: changing a signal the instant a clocked always block also triggers on is a same-edge race between the stimulus process and that block, and the fix generalizes to any stimulus edit that shares a clock edge with the logic it drives. Verified: builds cleanly under `verilator --binary --timing -Wall` (no warnings) and passes 40/40 checked cycles across repeated runs.
 
 ```verilog
 `timescale 1ns/1ps
@@ -12,13 +12,16 @@ Plain Verilog-2001, no `$fatal`/`$error`. The reference model is an unbounded co
 module tb_counter;
     localparam WIDTH = 4;
 
-    reg              clk = 1'b0;
+    reg              clk;
     reg              rst;
     wire [WIDTH-1:0] dut_count;
 
     counter #(.WIDTH(WIDTH)) dut (.clk(clk), .rst(rst), .count(dut_count));
 
-    always #5 clk = ~clk;
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;
+    end
 
     // Independent reference model: unbounded, not a copy of the DUT's
     // fixed-width wrap arithmetic. Non-blocking: it stands in for real
@@ -30,23 +33,27 @@ module tb_counter;
         else
             cycle_count <= cycle_count + 1;
 
-    integer errors  = 0;
-    integer checked = 0;
+    integer errors;
+    integer checked;
     always @(negedge clk)
         if (!rst) begin
-            checked = checked + 1;
+            checked <= checked + 1;
             if (dut_count !== cycle_count[WIDTH-1:0]) begin
                 $display("MISMATCH cycle=%0d expected=%0d got=%0d",
                           checked, cycle_count[WIDTH-1:0], dut_count);
-                errors = errors + 1;
+                errors <= errors + 1;
             end
         end
 
     initial begin
+        errors  = 0;
+        checked = 0;
         rst = 1'b1;
         repeat (2) @(posedge clk);
+        @(negedge clk);   // deassert off the active edge, not racing it
         rst = 1'b0;
         repeat (40) @(posedge clk);
+        @(negedge clk);   // let the last cycle's checker update settle
         if (errors == 0)
             $display("TEST PASSED: %0d cycles checked, 0 mismatches", checked);
         else
