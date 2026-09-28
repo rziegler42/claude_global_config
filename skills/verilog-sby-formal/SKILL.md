@@ -42,6 +42,8 @@ For pipelines, queues, buses, and controllers, add ghost state that tracks the m
 
 Use immediate properties in procedural Verilog, typically inside `always @(posedge clk)`. Place a clear comment beside each property naming the contract it protects. Keep covers separate from safety assertions when their setup or depth differs.
 
+For logic that behaves differently by mode or opcode, scope one property to its case with an implication (`assert(i_sel_add -> (o_result == f_expected_sum));`) inside a shared `always` block, rather than a separate block per mode. The implication is vacuously true whenever the selector does not hold, so it adds no constraint outside its case.
+
 ## Choose and record the task
 
 Pick `bmc` (bounded counterexample search), `prove` (k-induction), or `cover` (reachability, vacuity detection); see `reference.md`. A passing bound is not an unbounded proof. Record mode, depth, timeout, engine, defines, top module, abstractions, and expected result (`expect pass` / `expect fail` in `[options]`) in the `.sby` file. If a solver fallback is needed, record why, its arguments, elapsed time, and outcome. Splitting tasks for faster feedback must not change the property, depth, or assumptions.
@@ -59,6 +61,8 @@ Treat `PASS`, `FAIL`, `TIMEOUT`, and `UNKNOWN` distinctly. A timeout or unknown 
 Every important safety proof needs a complementary reachability witness: cover a useful end-to-end path, normally including a response/completion and return to an idle or reusable state; cover two or three transactions when throughput matters.
 
 Keep at least one deliberately broken property or mutation fixture that fails with a retained counterexample, as a separate `.sby` task with `expect fail` and a define that enables the break (see `reference.md`). It validates that the task compiles the intended harness, the assumptions are not vacuous, and diagnostics are usable.
+
+Assumptions can also make a legitimate configuration unreachable without any assertion ever failing. Cover a state the assumptions should still permit, not only DUT progress; an unreached cover there means the assumptions themselves are contradictory, not merely a hard-to-reach path.
 
 Formal complements dynamic verification: simulation for broad behavioral and timing evidence, formal for exhaustive local safety, ordering, and corner-state claims.
 
