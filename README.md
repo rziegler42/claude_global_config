@@ -17,8 +17,8 @@ downloads, synced skills, or other generated and machine-specific state.
 - `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
   reviewer, security-reviewer, and researcher agents (see below).
 - `skills/` — architecture-decision, Graphify workflow, security-review, and
-  Verilog/SymbiYosys formal-verification skills maintained with this
-  configuration.
+  Verilog formal-verification (SymbiYosys) and simulation (Verilator)
+  skills maintained with this configuration.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.

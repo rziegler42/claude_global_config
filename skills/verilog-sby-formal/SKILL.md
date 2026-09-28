@@ -1,6 +1,6 @@
 ---
 name: verilog-sby-formal
-description: "Use when writing, reviewing, or debugging Verilog-2001 formal proofs with SymbiYosys (`sby`): `.sby` tasks (bmc/prove/cover), harnesses, immediate assert/assume/cover, k-induction step failures, counterexamples from unreachable states, a cover that never reaches its goal (fill-then-drain, a completion, a return to idle), timeouts, or vacuous assumptions; also when asked to bump depth, or add an assume such as forcing a push or an opcode, to make a proof pass or a cover reach. Not for SystemVerilog assertions or plain simulation."
+description: "Use when writing, reviewing, or debugging Verilog-2001 formal proofs with SymbiYosys (`sby`): `.sby` tasks (bmc/prove/cover), harnesses, immediate assert/assume/cover, k-induction step failures, counterexamples from unreachable states, a cover that never reaches its goal (fill-then-drain, a completion, a return to idle), timeouts, or vacuous assumptions; also when asked to bump depth, or add an assume such as forcing a push or an opcode, to make a proof pass or a cover reach. Not for SystemVerilog assertions or plain simulation; see verilog-verilator-sim for a Verilator testbench, self-checking driver, or intermittent simulation failure."
 ---
 
 # Verilog + SymbiYosys formal verification
