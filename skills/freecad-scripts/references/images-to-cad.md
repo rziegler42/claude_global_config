@@ -16,7 +16,7 @@ build with named parameters, then compare and correct.
 3. **Write a feature list before any code**: base profile, then each additive/subtractive
    feature, then patterns, in the order a machinist would make it. Note which dimensions are
    measured, which are standard values (M3 clearance 3.4 mm, 3 mm wall) and which are guesses.
-4. **Put every dimension in a Spreadsheet alias** (see `partdesign-and-parameters.md`). No
+4. **Put every dimension in a VarSet property** (see `partdesign-and-parameters.md`). No
    magic numbers buried in code, so the user can correct one value and the model follows.
 5. **Build, screenshot, compare, correct.** After each feature, render a view
    (below) and compare it against the reference image; fix proportions before adding detail.
@@ -63,6 +63,27 @@ for i in range(1, n + 1):
 Limits: thresholding fails on low contrast, shadows and glare; edges are anti-aliased so
 expect roughly +/-1 px error; image Y points down, FreeCAD Y points up (flip when
 transferring coordinates). Say which of these applies to the image at hand.
+
+## Reference image planes in the model
+
+The user's own models place reference photos in the document as `Image::ImagePlane` objects
+and model on top of them. Creating one works in 1.1.4; size it in millimetres using the scale
+from step 1 (`XSize`/`YSize` are the plane's physical width and height).
+
+```python
+import FreeCAD
+doc = FreeCAD.ActiveDocument or FreeCAD.newDocument("Ref")
+plane = doc.addObject("Image::ImagePlane", "FrontPhoto")
+plane.ImageFile = "/path/to/photo.png"
+plane.XSize = 120.0                      # image width in mm = pixel width / px_per_mm
+plane.YSize = 90.0                       # image height in mm
+# Placement orients it: a front photo is usually rotated 90 degrees about X so it stands
+# in the XZ plane. The orientation was not checked here; confirm in a view.
+doc.recompute()
+```
+
+Put the plane in its own group and lock or hide it when finished so it is not selected or
+exported by accident (it should not appear in a 3MF or STEP export of the part).
 
 ## Comparing the model with the reference
 

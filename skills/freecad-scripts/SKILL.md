@@ -1,6 +1,6 @@
 ---
 name: freecad-scripts
-description: 'Use when writing or debugging FreeCAD 1.1 Python: scripts, macros, or code sent through the freecad MCP execute_code tools. Also use when reverse engineering an STL/OBJ/3MF mesh into a parametric model, building a CAD model that matches a photo, drawing or screenshot, or driving PartDesign dimensions from a Spreadsheet. Covers Part, PartDesign, Sketcher, Draft, Mesh, FEM, CAM, FeaturePython objects, PySide6 task panels, Coin3D/Pivy, and workbenches. Check the deprecated-API table before using any older example.'
+description: 'Use when writing or debugging FreeCAD 1.1 Python: scripts, macros, or code sent through the freecad MCP execute_code tools. Also use when reverse engineering an STL/OBJ/3MF mesh into a parametric model, building a CAD model that matches a photo, drawing or screenshot, driving PartDesign and Sketcher dimensions from a VarSet, building Assembly joints, exporting 3MF for 3D printing, or using the Curves and Curved Shapes workbenches. Covers Part, PartDesign, Sketcher, Assembly, Mesh, Draft, FEM, FeaturePython objects, PySide6 task panels, Coin3D/Pivy, and workbenches. Check the deprecated-API table before using any older example.'
 ---
 
 # FreeCAD Scripts
@@ -10,14 +10,14 @@ Expert skill for generating production-quality Python scripts for the FreeCAD CA
 ## When to Use This Skill
 
 - Writing Python scripts for FreeCAD's built-in console or macro system
-- Creating or manipulating 3D geometry (Part, PartDesign, Mesh, Sketcher, CAM, FEM)
+- Creating or manipulating 3D geometry (Part, PartDesign, Mesh, Sketcher, Assembly, FEM)
 - Building parametric FeaturePython objects with custom properties
 - Developing GUI tools using PySide/Qt within FreeCAD
 - Manipulating the Coin3D scenegraph via Pivy
 - Creating custom workbenches or Gui Commands
 - Automating repetitive CAD operations with macros
 - Converting between mesh and solid representations
-- Scripting FEM analyses or TechDraw exports
+- Scripting FEM analyses
 
 ## Prerequisites
 
@@ -34,10 +34,14 @@ Match the request before writing code. These are workflows, not API lookups; rea
 |---|---|
 | "Reverse engineer this mesh/STL", "make this scan parametric", "fit a model to this mesh" | [mesh-reverse-engineering.md](references/mesh-reverse-engineering.md) |
 | "Model this from a photo/drawing/screenshot", "match this image" | [images-to-cad.md](references/images-to-cad.md) |
-| Parametric parts, Pocket/Hole/Fillet/patterns, Spreadsheet-driven dimensions | [partdesign-and-parameters.md](references/partdesign-and-parameters.md) |
+| Parametric parts, Pocket/Hole/Fillet/patterns, VarSet-driven dimensions | [partdesign-and-parameters.md](references/partdesign-and-parameters.md) |
+| Assemblies, joints, mating parts, exporting 3MF / preparing for 3D printing | [assembly-and-3mf.md](references/assembly-and-3mf.md) |
+| Curves workbench, Curved Shapes, NURBS surfaces, sweeps along rails, lofted/curved arrays | [curves-and-curved-shapes.md](references/curves-and-curved-shapes.md) |
 
 Rules that apply to all three:
-- Build parametric models in a `PartDesign::Body` with dimensions in a Spreadsheet, never a faceted mesh-to-solid conversion or hard-coded numbers.
+- Build parametric models in a `PartDesign::Body` with dimensions in an `App::VarSet` (the user's convention: one object named `VarSet`, `App::PropertyLength` properties in PascalCase), never a faceted mesh-to-solid conversion or hard-coded numbers. Do not use a Spreadsheet unless asked.
+- Prefer native PartDesign and Sketcher features; use the Curves / Curved Shapes addons only for what core lacks, and verify addon output (it is Part-level, not a PartDesign feature).
+- Model each assembly part as its own Body; the user exports 3MF for 3D printing, so default to millimetres and verify exported meshes are closed solids.
 - Establish scale and units before measuring anything; ask for one real dimension if there is none.
 - After building, compare against the source (deviation for meshes, a rendered view for images) and report the numbers, including what was approximated or assumed.
 - Test unfamiliar calls headless first (`execute_code_headless` or `freecadcmd`), then run in the GUI.
@@ -756,7 +760,9 @@ See the [references/](references/) directory for topic-organized guides:
 5. [workbenches-and-advanced.md](references/workbenches-and-advanced.md) — Workbenches, macros, FEM, CAM, recipes
 6. [mesh-reverse-engineering.md](references/mesh-reverse-engineering.md) — Mesh triage, repair, primitive fitting, parametric rebuild, deviation
 7. [images-to-cad.md](references/images-to-cad.md) — Scale from images, pixel measurement, build-compare loop
-8. [partdesign-and-parameters.md](references/partdesign-and-parameters.md) — PartDesign features, sketch health, Spreadsheet parameters
+8. [partdesign-and-parameters.md](references/partdesign-and-parameters.md) — PartDesign features (pipes, lofts, patterns, multi-body Boolean), Sketcher, sketch health, VarSet parameters
+9. [assembly-and-3mf.md](references/assembly-and-3mf.md) — Assembly joints, reference format, 3MF export for printing
+10. [curves-and-curved-shapes.md](references/curves-and-curved-shapes.md) — Installed Curves (0.6.71) and Curved Shapes (1.00.14) addons
 
 ### Bundled Script
 

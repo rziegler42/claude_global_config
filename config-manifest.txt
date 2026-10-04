@@ -13,6 +13,8 @@ bin/claude-workflow
 bin/remote-runner
 skills/architecture-decisions/SKILL.md
 skills/freecad-scripts/SKILL.md
+skills/freecad-scripts/references/assembly-and-3mf.md
+skills/freecad-scripts/references/curves-and-curved-shapes.md
 skills/freecad-scripts/references/geometry-and-shapes.md
 skills/freecad-scripts/references/gui-and-interface.md
 skills/freecad-scripts/references/parametric-objects.md
