@@ -12,6 +12,16 @@ hooks/review_agent_guard.py
 bin/claude-workflow
 bin/remote-runner
 skills/architecture-decisions/SKILL.md
+skills/freecad-scripts/SKILL.md
+skills/freecad-scripts/references/geometry-and-shapes.md
+skills/freecad-scripts/references/gui-and-interface.md
+skills/freecad-scripts/references/parametric-objects.md
+skills/freecad-scripts/references/scripting-fundamentals.md
+skills/freecad-scripts/references/workbenches-and-advanced.md
+skills/freecad-scripts/references/images-to-cad.md
+skills/freecad-scripts/references/mesh-reverse-engineering.md
+skills/freecad-scripts/references/partdesign-and-parameters.md
+skills/freecad-scripts/scripts/mesh_report.py
 skills/graphify-workflow/SKILL.md
 skills/graphify-workflow/references/extraction-spec.md
 skills/graphify-workflow/references/refresh.md

@@ -16,9 +16,9 @@ downloads, synced skills, or other generated and machine-specific state.
   security-reviewer, researcher, committer, and Graphify semantic agents.
 - `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
   reviewer, security-reviewer, and researcher agents (see below).
-- `skills/` — architecture-decision, Graphify workflow, security-review, and
-  Verilog formal-verification (SymbiYosys) and simulation (Verilator)
-  skills maintained with this configuration.
+- `skills/` — architecture-decision, FreeCAD scripting (FreeCAD 1.1), Graphify
+  workflow, security-review, and Verilog formal-verification (SymbiYosys) and
+  simulation (Verilator) skills maintained with this configuration.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
