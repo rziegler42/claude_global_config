@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment G: installed, probes pending a fresh session, ned job pending)
+Status: In Progress (Increment G: installed; ned job passed; probes pending a fresh session)
 Created: 2026-10-15
 
 ## Goal
@@ -374,3 +374,22 @@ job on `ned`).
 --dry-run` ran without a prompt, which indicates this session had not reloaded
 `settings.json` (not proof the rules are wrong). Repeat the probes in a fresh
 session. Not yet done: one real snapshot job on `ned` (needs the owner's go-ahead).
+
+### Increment G, runner job (2026-10-15): passed
+
+Throwaway clone of `claude_project_template` at `8d61ae4` (pushed to origin)
+with an untracked `.claude/remote-runner.toml` and `snapshot-marker.txt`.
+`remote-runner submit --snapshot --remote ned --profile probe` produced job
+`ned--snapshot-probe--20261015-155219--7baa1464`: snapshot commit
+`0c6aa2dcb340f54b163014cc581a28982268ffd9` on base `8d61ae439f7b8ca0a24abc861d543a90054eb80f`,
+`dut_commit` equal to it, `dut_clean: true`, `integrity: ok`, state `PASSED`,
+log ended `SNAPSHOT_OK` (the command read the untracked marker and the
+snapshot's own contract). The source clone's `HEAD` and status were unchanged.
+This also exercised a Linux runner (`ned`) fetching the base from GitHub and
+the fsck-enabled bundle fetch.
+
+Prune was previewed only: the preview listed 45 older `m65c02risc` jobs
+(unrelated to this work, 31-33 days old) and not the new job, so `--apply` was
+deliberately not run; removal of the snapshot ref on a live runner is covered
+by local tests only. Remaining: repeat the permission probes in a fresh
+session.
