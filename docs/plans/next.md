@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment C complete, uncommitted)
+Status: In Progress (Increment D complete, uncommitted)
 Created: 2026-10-15
 
 ## Goal
@@ -284,7 +284,7 @@ are literal prefixes, so spellings such as `git -C <dir> commit` or a relative
 `python3 bin/claude-workflow commit` are not matched and fall to the
 auto-mode classifier.
 
-### Increment C (2026-10-15): complete, not yet committed
+### Increment C (2026-10-15): complete, committed as `ddd568e`
 
 `snapshot()` in `bin/remote-runner` and `tests/test_remote_runner_snapshot.py`
 (27 tests; full suite 432 OK, 5 skipped). It builds a commit of the working
@@ -308,3 +308,26 @@ Notes: FIFOs and untracked nested repositories are skipped, as git does;
 submodule gitlinks keep their recorded commit; SHA-256 repositories are
 refused. Whole tracked tree is read to compare blob ids (IO cost on very large
 trees). Next: Increment D (bundle transport and worker action).
+
+### Increment D (2026-10-15): complete, not yet committed
+
+`bin/remote-runner` and `tests/test_remote_runner_snapshot_submit.py` (16
+tests; full suite 448 OK, 5 skipped). `submit --snapshot` (exclusive with
+`--ref`) builds the snapshot, bundles it on top of `HEAD`, and sends one stream
+over ssh: `python3 -I -c BOOTSTRAP`, then a length line, exactly that many bytes
+of the worker script, then the bundle. The `submit-snapshot` worker action
+validates object IDs, size (256 MiB limit), and SHA-256 before reading;
+receives exactly the declared bytes and refuses a short stream, trailing data,
+or digest mismatch; fetches the base from origin (so an unpushed base fails
+with a push message and leaves no job directory); runs `git bundle verify` and
+fetches only `refs/snapshot/head` with `transfer.fsckObjects`; requires the
+fetched commit to equal the declared commit and to have exactly the declared
+base as its only parent; then uses the existing worktree and `dut_commit` /
+`dut_clean` checks on the snapshot commit. Records `snapshot`, `base_commit`,
+and `snapshot_ref`; `status` reports `snapshot` and `base_commit`. Prune and
+the failure path delete `refs/snapshots/<job>`; the bundle and worktree go with
+the job directory. Plain `submit` is unchanged.
+
+Notes: runner objects from a pruned snapshot remain until git's own gc;
+the base must already be on origin (a bundle carries no base history).
+Reviewed next in Increment F; E (docs/policy) comes first.

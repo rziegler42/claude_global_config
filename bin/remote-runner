@@ -53,6 +53,16 @@ ARTIFACT_LIMIT = 2000
 REQUIREMENT_KEYS = frozenset({"os", "arch", "min_memory_gib", "min_cpu_cores", "labels"})
 SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024
 SNAPSHOT_MAX_FILES = 5000
+BUNDLE_LIMIT = 256 * 1024 * 1024
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# Run as `python3 -I -c BOOTSTRAP <worker args>`: stdin is "<length>\n", exactly
+# that many bytes of this script, then the snapshot bundle, which the script reads.
+BOOTSTRAP = (
+    "import sys;f=sys.stdin.buffer;n=int(f.readline(24));"
+    "0<n<=16777216 or sys.exit('bad script length');s=f.read(n);"
+    "len(s)==n or sys.exit('short script');sys.argv=['-']+sys.argv[1:];"
+    "exec(compile(s,'remote-runner','exec'),{'__name__':'__main__'})"
+)
 SNAPSHOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "remote-runner", "GIT_AUTHOR_EMAIL": "noreply",
     "GIT_COMMITTER_NAME": "remote-runner", "GIT_COMMITTER_EMAIL": "noreply",
@@ -499,6 +509,48 @@ def snapshot(repo: Path, *, max_bytes: int = SNAPSHOT_MAX_BYTES,
         yield Snapshot(commit, base, tree, git_dir, changed, total)
 
 
+def make_bundle(snap: Snapshot, destination: Path) -> tuple[int, str]:
+    """Write the snapshot as a bundle on top of its base; return (size, sha256)."""
+    snapshot_git("bundle", "create", str(destination), "refs/snapshot/head", f"^{snap.base}",
+                 git_dir=snap.git_dir)
+    digest = hashlib.sha256()
+    size = 0
+    with destination.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    if size > BUNDLE_LIMIT:
+        fail(f"snapshot bundle is {size} bytes, over the limit of {BUNDLE_LIMIT}")
+    return size, digest.hexdigest()
+
+
+def build_payload(bundle: Path, destination: Path) -> None:
+    """Length-prefixed copy of this script followed by the bundle (see ``BOOTSTRAP``)."""
+    script = Path(__file__).read_bytes()
+    with destination.open("wb") as output:
+        output.write(b"%d\n" % len(script) + script)
+        with bundle.open("rb") as handle:
+            shutil.copyfileobj(handle, output, 1 << 20)
+
+
+def read_bundle(stream, size: int, digest: str, destination: Path) -> None:
+    """Receive exactly ``size`` bytes, verify the digest, and refuse trailing data."""
+    hasher = hashlib.sha256()
+    remaining = size
+    with destination.open("wb") as output:
+        while remaining:
+            chunk = stream.read(min(remaining, 1 << 20))
+            if not chunk:
+                fail("bundle stream ended early")
+            hasher.update(chunk)
+            output.write(chunk)
+            remaining -= len(chunk)
+    if stream.read(1):
+        fail("trailing data after the bundle")
+    if hasher.hexdigest() != digest:
+        fail("bundle digest mismatch")
+
+
 def capability_mismatches(config: dict[str, object],
                           requirements: dict[str, object]) -> list[str]:
     capabilities = config.get("capabilities", {})
@@ -552,16 +604,19 @@ def remote_name_from_job(job: str) -> str:
 
 
 def invoke_worker(remote: str, operation: str, *arguments: str,
-                  stream: bool = False) -> subprocess.CompletedProcess[bytes]:
+                  stream: bool = False, payload: Path | None = None
+                  ) -> subprocess.CompletedProcess[bytes]:
+    """Run a worker operation; ``payload`` replaces stdin (see ``BOOTSTRAP``)."""
     config = remote_config(remote)
-    worker_args = ["python3", "-I", "-", "--worker", operation,
+    entry = ["python3", "-I", "-c", BOOTSTRAP] if payload is not None else ["python3", "-I", "-"]
+    worker_args = [*entry, "--worker", operation,
                    "--workspace-root", str(config["workspace_root"]),
                    "--max-jobs", str(config["max_jobs"]), *arguments]
     # ssh joins its remote arguments with spaces and gives them to the remote
     # login shell, so every argument is quoted; "--" keeps the host from being
     # read as an ssh option.
     remote_command = " ".join(shlex.quote(item) for item in worker_args)
-    with Path(__file__).open("rb") as source:
+    with (payload if payload is not None else Path(__file__)).open("rb") as source:
         try:
             return subprocess.run(
                 ["ssh", "--", str(config["ssh_host"]), remote_command], stdin=source,
@@ -573,6 +628,8 @@ def invoke_worker(remote: str, operation: str, *arguments: str,
             detail = error.stderr.decode(errors="replace").strip()
             if "not our ref" in detail:
                 fail("the requested commit is not reachable from origin; commit and push it before submitting")
+            if "base commit" in detail:
+                fail(f"remote {remote!r} {operation} failed: {detail}")
             fail(f"remote {remote!r} {operation} failed: {detail or 'no diagnostic returned'}")
 
 
@@ -616,6 +673,49 @@ def recommend_remote(requirements: dict[str, object]) -> tuple[str | None, dict[
     }
 
 
+def submit_snapshot(args: argparse.Namespace, repo: Path) -> None:
+    """Send a snapshot of the working tree to a runner as a bundle over SSH."""
+    with snapshot(repo) as snap:
+        project, profiles, requirements = project_config(repo, revision=snap.commit,
+                                                         git_dir=snap.git_dir)
+        if args.profile not in profiles:
+            fail(f"unknown profile {args.profile!r}; available: {', '.join(sorted(profiles))}")
+        remote = args.remote
+        if args.best:
+            remote, report = recommend_remote(requirements[args.profile])
+            if remote is None:
+                fail(f"no eligible available remote for profile {args.profile!r}: {json.dumps(report)}")
+        source_url = git_value(repo, "remote", "get-url", "origin")
+        if not valid_source_url(source_url):
+            fail("origin URL must be https://, ssh:// or scp-style user@host:path, "
+                 "without an embedded password")
+        source_ref = source_ref_for(repo, "HEAD")
+        job = f"{remote}--{project}--{time.strftime('%Y%m%d-%H%M%S')}--{uuid.uuid4().hex[:8]}"
+        if not JOB_ID.fullmatch(job):
+            fail("remote or project name makes an invalid job ID")
+        with tempfile.TemporaryDirectory(prefix="remote-runner-payload-") as scratch:
+            bundle = Path(scratch) / "snapshot.bundle"
+            size, digest = make_bundle(snap, bundle)
+            payload = Path(scratch) / "payload"
+            build_payload(bundle, payload)
+            result = invoke_worker(
+                remote, "submit-snapshot", "--job", job, "--project", b64(project),
+                "--source-url", b64(source_url), "--commit", snap.commit, "--base", snap.base,
+                "--bundle-size", str(size), "--bundle-sha256", digest,
+                *( ["--source-ref", b64(source_ref)] if source_ref else []),
+                "--command", b64(profiles[args.profile]), payload=payload,
+            )
+        try:
+            data = json.loads(result.stdout.decode())
+        except ValueError:
+            print(result.stdout.decode(), end="")
+            return
+        data.update({"profile": args.profile, "command": profiles[args.profile],
+                     "source": source_url, "snapshot": True, "commit": snap.commit,
+                     "base_commit": snap.base, "changed_files": len(snap.changed)})
+        print(json.dumps(data, indent=2))
+
+
 def controller(args: argparse.Namespace) -> None:
     if args.action == "remotes":
         for name, config in sorted(load_remotes().items()):
@@ -632,6 +732,10 @@ def controller(args: argparse.Namespace) -> None:
             fail(f"unknown profile {args.profile!r}; available: {', '.join(sorted(profiles))}")
         _, report = recommend_remote(requirements[args.profile])
         print(json.dumps(report, indent=2))
+        return
+
+    if args.action == "submit" and args.snapshot:
+        submit_snapshot(args, repository_root())
         return
 
     if args.action == "submit":
@@ -792,6 +896,8 @@ def public_view(metadata: dict[str, object]) -> dict[str, object]:
         "dut_commit": dut_commit,
         "dut_clean": dut_clean,
         "integrity": integrity,
+        "snapshot": metadata.get("snapshot") is True,
+        "base_commit": word(metadata.get("base_commit"), HEX40),
         "source_ref": word(metadata.get("source_ref"), SOURCE_REF),
         "created_at": created,
         "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) and abs(pid) < 2 ** 31 else None,
@@ -894,6 +1000,13 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
                         ["git", "--git-dir", str(bare), "worktree", "remove", "--force", worktree],
                         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
+            if isinstance(cache, str) and JOB_ID.fullmatch(job):
+                bare = projects_root / cache / "repo.git"
+                if bare.is_dir():
+                    subprocess.run(
+                        ["git", "--git-dir", str(bare), "update-ref", "-d", f"refs/snapshots/{job}"],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
             try:
                 if job_dir.parent == jobs_root and job_dir.is_dir() and not job_dir.is_symlink():
                     shutil.rmtree(job_dir)
@@ -924,7 +1037,16 @@ def worker(args: argparse.Namespace) -> None:
     job_dir = jobs_root / args.job
     metadata_path = job_dir / "metadata.json"
 
-    if args.worker_action == "submit":
+    if args.worker_action in ("submit", "submit-snapshot"):
+        snapshot_mode = args.worker_action == "submit-snapshot"
+        if snapshot_mode:
+            if not (args.commit and HEX40.fullmatch(args.commit)
+                    and args.base and HEX40.fullmatch(args.base)):
+                fail("snapshot commit and base must be 40-character object IDs")
+            if not (args.bundle_sha256 and HEX64.fullmatch(args.bundle_sha256)):
+                fail("bundle digest must be a SHA-256 hex string")
+            if args.bundle_size is None or not 0 < args.bundle_size <= BUNDLE_LIMIT:
+                fail(f"bundle size is outside the limit of {BUNDLE_LIMIT} bytes")
         project = unb64(args.project)
         source_url = unb64(args.source_url)
         source_ref = unb64(args.source_ref) if args.source_ref else None
@@ -971,15 +1093,35 @@ def worker(args: argparse.Namespace) -> None:
                 run(["git", "-C", str(bare), "remote", "add", "--", "origin", source_url], capture=True)
             else:
                 run(["git", "-C", str(bare), "remote", "set-url", "--", "origin", source_url], capture=True)
+            wanted = args.base if snapshot_mode else args.commit
+            if snapshot_mode:
+                read_bundle(sys.stdin.buffer, args.bundle_size, args.bundle_sha256,
+                            job_dir / "snapshot.bundle")
             try:
                 run([
                     "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
                     "-c", "protocol.ssh.allow=always", "-C", str(bare),
-                    "fetch", "--prune", "origin", source_ref or args.commit,
+                    "fetch", "--prune", "origin", source_ref or wanted,
                 ], capture=True)
-                run(["git", "-C", str(bare), "cat-file", "-e", f"{args.commit}^{{commit}}"], capture=True)
+                run(["git", "-C", str(bare), "cat-file", "-e", f"{wanted}^{{commit}}"], capture=True)
             except subprocess.CalledProcessError:
+                if snapshot_mode:
+                    fail("runner could not fetch the base commit from origin; push it first")
                 fail("runner could not fetch the requested revision from origin; push the branch or tag first")
+            if snapshot_mode:
+                bundle_file = job_dir / "snapshot.bundle"
+                try:
+                    run(["git", "-C", str(bare), "bundle", "verify", str(bundle_file)], capture=True)
+                    run(["git", "-c", "transfer.fsckObjects=true", "-C", str(bare), "fetch",
+                         "--no-tags", str(bundle_file),
+                         f"refs/snapshot/head:refs/snapshots/{args.job}"], capture=True)
+                except subprocess.CalledProcessError:
+                    fail("snapshot bundle failed verification")
+                if git_value(bare, "rev-parse", f"refs/snapshots/{args.job}") != args.commit:
+                    fail("snapshot commit does not match the declared commit")
+                lineage = git_value(bare, "rev-list", "--parents", "-n", "1", args.commit).split()
+                if lineage != [args.commit, args.base]:
+                    fail("snapshot commit does not sit directly on the declared base")
 
             worktree = job_dir / "worktree"
             run(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(worktree), args.commit], capture=True)
@@ -1012,12 +1154,21 @@ def worker(args: argparse.Namespace) -> None:
                 "exit_status": str(exit_status), "pid_start": process_start(process.pid),
                 "record_version": 2,
             }
+            if snapshot_mode:
+                metadata.update({"snapshot": True, "base_commit": args.base,
+                                 "snapshot_ref": f"refs/snapshots/{args.job}"})
             metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
             print(json.dumps({
                 "job": args.job, "state": "RUNNING", "pid": process.pid,
                 "dut_commit": dut_commit, "dut_clean": dut_clean,
+                **({"snapshot": True, "base_commit": args.base} if snapshot_mode else {}),
             }, indent=2))
         except BaseException:
+            if snapshot_mode:
+                subprocess.run(
+                    ["git", "--git-dir", str(bare), "update-ref", "-d", f"refs/snapshots/{args.job}"],
+                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
             subprocess.run(
                 ["git", "--git-dir", str(bare), "worktree", "remove", "--force", str(job_dir / "worktree")],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1100,8 +1251,14 @@ def parser() -> argparse.ArgumentParser:
     selection.add_argument("--best", action="store_true",
                            help="choose the best eligible available remote")
     submit.add_argument("--profile", required=True)
-    submit.add_argument(
+    source = submit.add_mutually_exclusive_group()
+    source.add_argument(
         "--ref", help="local branch, tag, or commit already reachable from origin (default: HEAD)",
+    )
+    source.add_argument(
+        "--snapshot", action="store_true",
+        help="test the working tree, including uncommitted and untracked files, as a bundle "
+             "on top of HEAD (HEAD must be reachable from origin)",
     )
     prune = sub.add_parser("prune", help="preview or remove expired jobs")
     prune.add_argument("--remote", required=True)
@@ -1120,7 +1277,8 @@ def parser() -> argparse.ArgumentParser:
 def worker_parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(add_help=False)
     result.add_argument("--worker", dest="worker_action", required=True,
-                        choices=("submit", "status", "log", "artifacts", "cancel", "prune", "availability"))
+                        choices=("submit", "submit-snapshot", "status", "log", "artifacts", "cancel",
+                                     "prune", "availability"))
     result.add_argument("--workspace-root", required=True)
     result.add_argument("--max-jobs", type=int, required=True)
     result.add_argument("--job")
@@ -1129,6 +1287,9 @@ def worker_parser() -> argparse.ArgumentParser:
     result.add_argument("--source-ref")
     result.add_argument("--commit")
     result.add_argument("--command")
+    result.add_argument("--base")
+    result.add_argument("--bundle-size", type=int)
+    result.add_argument("--bundle-sha256")
     result.add_argument("--follow", action="store_true")
     result.add_argument("--success-days", type=float, default=7)
     result.add_argument("--failure-days", type=float, default=30)
