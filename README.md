@@ -399,5 +399,7 @@ change:
    `./install.sh --check`.
 5. Review and commit from this repository; never copy runtime state wholesale.
 
-The default source for new project templates is the separate tracked
-`claude_project_template` repository.
+The default source for new projects is the separate tracked
+`claude_project_template` repository. Create a project with its `install.py`
+(opt-in modules, fresh `git init`, explicit local git identity) rather than by
+copying the directory; see that repository's README.

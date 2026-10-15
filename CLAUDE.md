@@ -7,7 +7,9 @@
   helpers, settings, or personal skills, update both that repository and
   `~/.claude`.
 - Treat the tracked `claude_project_template` repository as the default source
-  for project template work.
+  for project template work. Create a new project with its `install.py`
+  (opt-in modules, fresh `git init`, explicit local git identity), never by
+  copying the directory.
 - Never mirror generated or private Claude state such as sessions, history,
   caches, backups, authentication data, remote-host configuration, plugin
   payloads, or machine-specific runtime state.
