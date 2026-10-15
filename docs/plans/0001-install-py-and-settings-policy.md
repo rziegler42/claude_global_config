@@ -102,8 +102,11 @@ install was a no-op because the dry-run showed nothing to change.
 
 ## Deferred work
 
-- A key removed from the repository stays in the installed file; no
-  `--remove` or pruning of `backups/`.
+- Removing a manifest path leaves the installed file in place; there is no
+  `--remove` or pruning of `backups/`. (Corrected 2026-10-15: this item
+  originally said that a removed `settings.json` key stays installed, which is
+  false for strict keys; they are reported `UNEXPECTED` and dropped on install
+  after a backup. Found by the Codex plan-review calibration.)
 - The Codex `second-opinion` helper, skill, and trigger design.
 - A neutral shared workflow helper in place of `claude-workflow`.
 

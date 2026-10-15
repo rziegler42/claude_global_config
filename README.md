@@ -25,6 +25,9 @@ downloads, synced skills, or other generated and machine-specific state.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
+- `bin/ask-codex`, `ask-codex/`, `skills/second-opinion/` — bounded, read-only
+  Codex plan review driven from Claude Code (see Second opinion).
+- `docs/specs/second-opinion-plan-review.md` — its specification.
 - `config-manifest.txt` — the complete allowlist installed into `~/.claude`.
 - `install.py` — an idempotent installer with dry-run, drift-check, backup, and
   settings-policy support (Python 3.9+, standard library only).
@@ -87,8 +90,13 @@ harmless local additions as drift, so the installer manages it by policy.
 
 Security-relevant keys (`permissions`, `hooks`, `env`, `apiKeyHelper`,
 `statusLine`, MCP and marketplace settings, and similar) cannot be declared
-`preference` or `open`; the installer rejects such a policy. A key removed from
-the repository remains in the installed file until you remove it.
+`preference` or `open`; the installer rejects such a policy.
+
+Removing things from the repository behaves differently by kind. Removing a
+path from `config-manifest.txt` leaves the installed file in place. Removing a
+`settings.json` key that is strict makes it a local-only key: `--check` reports
+it as `UNEXPECTED` and an install drops it from the installed file (the previous
+file is backed up first). Local-only `preference` and `open` entries are kept.
 
 Required plugins (enabled `true` in `settings.json`) must also be installed:
 `--check` prints `MISSING-PLUGIN <name>` and fails when the Claude Code plugin
@@ -184,6 +192,34 @@ The guard is an allowlist over command text, not a sandbox: code an agent is
 allowed to run, such as a repository's tests, is not confined. Anything it does
 not recognize is denied. The hooks resolve the script through
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+
+## Second opinion (Codex plan review)
+
+Claude Code can ask Codex to review `docs/plans/next.md` using your ChatGPT
+subscription (no API key). It is on demand only: ask Claude to "have Codex
+review the plan", or invoke `/second-opinion`. The `second-opinion` skill runs
+the `ask-codex` helper, which is read-only and round-limited:
+
+- Codex returns structured findings; **Claude is the only writer**, and applies
+  or rejects each blocker and major with a recorded reason.
+- The loop ends when a round has no blocker or major (converged), at the bound
+  (3 rounds by default, never more than 5 per request), when a rejected finding
+  is re-raised a second time, or after repeated failures. The plan stays
+  `Proposed` until you approve it.
+- Model and effort are explicit in `ask-codex/config.json` (`gpt-6.1-sol` at
+  `high`, rising to `xhigh` when a review struggles to converge). Run
+  `ask-codex models` to see what Codex currently offers.
+- `extend`, `reset`, `archive`, and `prune` need your approval; Claude Code
+  prompts for each.
+- Review state lives in untracked `.debug/<date>-plan-review/`. Run
+  `ask-codex archive` when closing a plan, paste its summary into the archived
+  plan, and `ask-codex prune` (preview, then `--confirm`) removes closed
+  reviews after 14 days.
+
+Codex runs read-only in the live repository with a minimal environment. The
+sandbox does not stop it reading other files your account can read, so the
+boundary is its prompt; this is recorded in ADR 0001. See the specification
+for the full behavior, accepted risks, and the calibration result.
 
 ## Testing
 

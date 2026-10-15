@@ -101,3 +101,4 @@ Completion: Observable evidence.
 | Plan | Status | Outcome |
 |---|---|---|
 | [0001](0001-install-py-and-settings-policy.md) | Completed | `install.py` replaces `install.sh`; settings policy, plugin presence, file-mode rules, security hardening |
+| [0002](0002-second-opinion-plan-review.md) | Completed | `ask-codex` and the `second-opinion` skill: bounded, read-only Codex plan review; two security reviews; calibration |
