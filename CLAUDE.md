@@ -124,23 +124,34 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   eligible or available, report that condition and do not bypass it with an
   arbitrary SSH command.
 - Use only `remote-runner`'s declared remotes and project profiles, never an
-  arbitrary SSH command. Remote jobs run only a committed revision reachable
-  from the repository remote; do not create a commit or push merely to offload
-  a check without explicit user approval. Record the job ID and inspect its
-  status and log before reporting its result.
+  arbitrary SSH command. A default remote job runs a committed revision
+  reachable from the repository remote; do not create a commit or push merely
+  to offload a check without explicit user approval. Record the job ID and
+  inspect its status and log before reporting its result.
 - **Remote DUT provenance is mandatory.** Treat a remote test as valid evidence
   only when its `remote-runner status` records `dut_commit` equal to the
-  submitted commit and `dut_clean: true`. Never run a verification command in a
-  pre-existing remote checkout, rely on its apparent branch name, or compare a
-  remote result against uncommitted local files. If the remote DUT provenance is
-  absent or mismatched, stop and resubmit through `remote-runner`; do not
-  describe the result as a test of the intended change.
-- For an approved long test of uncommitted work, prefer a temporary pushed WIP
-  branch over a snapshot upload: commit only the intended files, push the WIP
-  branch, then submit that branch with `remote-runner submit --ref <branch>`.
-  The job must still record its resolved commit SHA. Do not create, amend, push,
-  rebase, merge, or delete a WIP branch without explicit user approval; do not
-  use remote working-directory sync or copy ignored files as a substitute.
+  submitted commit and `dut_clean: true`. For a snapshot job the submitted
+  commit is the snapshot `commit` that `submit` reported, `snapshot: true`
+  and `base_commit` must name the local `HEAD` it was built on, and the result
+  describes the working tree as it was at submission. Never run a verification
+  command in a pre-existing remote checkout, rely on its apparent branch name,
+  or compare a remote result against uncommitted local files. If the remote
+  DUT provenance is absent or mismatched, stop and resubmit through
+  `remote-runner`; do not describe the result as a test of the intended change.
+- To test uncommitted work on a remote, use `remote-runner submit --snapshot`
+  (with `--remote` or `--best`) after the owner approves the prompt. It builds
+  a commit of the working tree in a temporary repository and sends it as a
+  verified bundle over the same SSH channel, with no commit, push, branch, or
+  change to the local index or working tree. It requires `HEAD` to be reachable
+  from the repository remote, refuses credential files, private keys, and
+  oversized trees, and runs the working tree's own `.claude/remote-runner.toml`.
+  Do not use remote working-directory sync or copy ignored files as a
+  substitute.
+- A temporary pushed WIP branch (`remote-runner submit --ref <branch>`) remains
+  available when the owner asks for a pushed record of the work or the snapshot
+  cannot be used. The job must still record its resolved commit SHA. Do not
+  create, amend, push, rebase, merge, or delete a WIP branch without explicit
+  user approval.
 - When explicitly authorized to create a WIP branch, use the reserved
   `wip/claude/<task-id>` prefix. Never force-push, push `main`, alter an
   existing shared branch, create a tag, or stage files outside the approved

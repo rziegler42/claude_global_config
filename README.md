@@ -407,10 +407,10 @@ properties.
 
 ### Submitting and monitoring jobs
 
-Run commands from inside the configured Git repository. A submission always
+Run commands from inside the configured Git repository. By default a submission
 uses a committed revision and the repository's `origin` URL. Push the branch or
-tag first so the remote can fetch it; uncommitted working-tree changes are never
-included.
+tag first so the remote can fetch it; uncommitted working-tree changes are not
+included. To test uncommitted work, use a snapshot (below).
 
 ```sh
 # Inspect selection before submitting.
@@ -442,6 +442,34 @@ standard output and error stream. `artifacts` lists files retained in the remote
 job directory; it does not download them. Use an intentionally designed profile
 or normal authenticated file-transfer tooling when an artifact must be copied.
 `cancel` sends `SIGTERM` to the job's process group.
+
+### Testing uncommitted work with a snapshot
+
+```sh
+remote-runner submit --snapshot --best --profile full
+```
+
+`--snapshot` (exclusive with `--ref`) builds a commit of the working tree on
+top of `HEAD` in a temporary repository and sends it as a verified Git bundle
+over the same SSH channel. It does not commit, push, create a branch, or touch
+the local index, refs, stash, or working tree. It includes modified, staged, and
+untracked files, honors `.gitignore`, and skips nested repositories.
+
+- `HEAD` must already be reachable from `origin`; the bundle carries only the
+  snapshot on top of it.
+- The snapshot is refused, naming the path and never the content, for
+  credential files (`.env*` other than templates, `id_*`, `.netrc`, `*.key`,
+  `*.p12`, `.aws/credentials`, and similar), any file containing a private key,
+  more than 5000 changed files, more than 64 MiB changed, an unresolved merge,
+  or a path that passes through a symlinked directory.
+- The job runs the snapshot's own `.claude/remote-runner.toml`, so an
+  uncommitted profile change runs on the runner. The runner is trusted with
+  whatever the working tree contains that the scan does not recognize.
+- `submit` prints `snapshot`, the snapshot `commit`, and `base_commit`;
+  `status` reports `dut_commit` equal to that commit with `dut_clean: true`.
+  The snapshot commit uses the fixed identity `remote-runner <noreply>`.
+- Prune removes the snapshot ref, bundle, and worktree on the runner; objects
+  remain in the repository cache until Git's own garbage collection.
 
 ### Retention cleanup
 

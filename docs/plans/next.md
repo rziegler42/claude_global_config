@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment D complete, uncommitted)
+Status: In Progress (Increment E complete)
 Created: 2026-10-15
 
 ## Goal
@@ -309,7 +309,7 @@ submodule gitlinks keep their recorded commit; SHA-256 repositories are
 refused. Whole tracked tree is read to compare blob ids (IO cost on very large
 trees). Next: Increment D (bundle transport and worker action).
 
-### Increment D (2026-10-15): complete, not yet committed
+### Increment D (2026-10-15): complete, committed as `8632655`
 
 `bin/remote-runner` and `tests/test_remote_runner_snapshot_submit.py` (16
 tests; full suite 448 OK, 5 skipped). `submit --snapshot` (exclusive with
@@ -331,3 +331,12 @@ the job directory. Plain `submit` is unchanged.
 Notes: runner objects from a pruned snapshot remain until git's own gc;
 the base must already be on origin (a bundle carries no base history).
 Reviewed next in Increment F; E (docs/policy) comes first.
+
+### Increment E (2026-10-15): complete, wording approved by the owner
+
+`README.md` (snapshot section, revised submission intro), `CLAUDE.md` tracked
+copy (default job wording; snapshot provenance rule; snapshot is the way to
+test uncommitted work; WIP branch retained as an owner-requested alternative),
+and ADR 0002 with its index row. `~/.claude/CLAUDE.md` is **not** changed: the
+owner reviews the tracked wording first, and the installed copy is updated with
+the Increment G install. `test_install.py` passes (75 OK, 5 skipped).
