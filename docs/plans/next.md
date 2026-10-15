@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment F complete)
+Status: In Progress (Increment G: installed, probes pending a fresh session, ned job pending)
 Created: 2026-10-15
 
 ## Goal
@@ -364,3 +364,13 @@ to an outside plain file is included; the rest of the trust model matches
 ADR 0002. Not tested: a Linux runner with git older than 2.24 (fsck on fetch is
 the protection that was exercised, on macOS git only; Increment G runs a real
 job on `ned`).
+
+### Increment G (2026-10-15): live install done; probes inconclusive; ned job pending
+
+`./install.py` ran after the reviewed dry-run (backup
+`~/.claude/backups/claude-global-config-20261015T194951Z`); `./install.py
+--check` reports a match. Probes in the installing session were inconclusive:
+`Read` of a scratch `.env` (absolute path) returned its content and `git push
+--dry-run` ran without a prompt, which indicates this session had not reloaded
+`settings.json` (not proof the rules are wrong). Repeat the probes in a fresh
+session. Not yet done: one real snapshot job on `ned` (needs the owner's go-ahead).
