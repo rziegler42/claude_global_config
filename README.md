@@ -225,13 +225,14 @@ sandbox does not stop it reading other files your account can read, so the
 boundary is its prompt; this is recorded in ADR 0001. See the specification
 for the full behavior, accepted risks, and the calibration result.
 
-New projects can carry the tool-neutral side of this workflow:
-`claude_project_template`'s `install.py --with plan-review` adds the policy
-(on request only, read-only reviewer, bounded rounds, nothing secret in
-reviewed files, approval is never replaced) and a `## Second opinion` section
-in `docs/plans/next.md` for the `ask-codex archive` summary. The template
-names no helper or skill; this helper and skill are the Claude-side binding
-for it.
+New projects can carry this workflow. `claude_project_template`'s
+`install.py --with codex` adds the Codex-specific guidance (how to request a
+review, the bound, who writes, the owner-only commands, where state lives, and
+how the `ask-codex archive` summary maps onto the plan's receipt) on top of the
+tool-neutral `plan-review` module, which it requires. That module supplies the
+policy (on request only, read-only reviewer, bounded rounds, nothing secret in
+reviewed files, approval is never replaced) and the `## Second opinion` section
+in `docs/plans/next.md`. Only the `codex` module names this helper and skill.
 
 ## Testing
 
