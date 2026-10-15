@@ -36,6 +36,8 @@ skills/graphify-workflow/tests/test_workflow.py
 skills/security-review/SKILL.md
 skills/verilog-sby-formal/SKILL.md
 skills/verilog-sby-formal/reference.md
+skills/verilog-verilator-sim/SKILL.md
+skills/verilog-verilator-sim/reference.md
 
 ask-codex/config.json
 ask-codex/kinds/plan-review/kind.json

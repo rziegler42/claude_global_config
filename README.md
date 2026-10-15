@@ -25,9 +25,13 @@ downloads, synced skills, or other generated and machine-specific state.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
-- `bin/ask-codex`, `ask-codex/`, `skills/second-opinion/` — bounded, read-only
-  Codex plan review driven from Claude Code (see Second opinion).
-- `docs/specs/second-opinion-plan-review.md` — its specification.
+- `bin/ask-codex`, `ask-codex/` (`config.json` and the review kinds),
+  `skills/second-opinion/` — bounded, read-only Codex plan review driven from
+  Claude Code (see Second opinion).
+- `docs/` — this repository's own documentation, not installed: `specs/`
+  (durable requirements, including the second-opinion specification),
+  `decisions/` (ADRs), and `plans/` (the active plan `next.md` and archived
+  plans).
 - `config-manifest.txt` — the complete allowlist installed into `~/.claude`.
 - `install.py` — an idempotent installer with dry-run, drift-check, backup, and
   settings-policy support (Python 3.9+, standard library only).
