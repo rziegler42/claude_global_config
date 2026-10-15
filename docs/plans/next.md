@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment B complete, uncommitted)
+Status: In Progress (Increment C complete, uncommitted)
 Created: 2026-10-15
 
 ## Goal
@@ -258,7 +258,7 @@ Not yet done: Increments B–G. Nothing from Increment A is installed to
 `~/.claude`; install only after the reviewed dry-run in Increment G (or earlier
 on request).
 
-### Increment B (2026-10-15): complete, not yet committed
+### Increment B (2026-10-15): complete, committed as `5f780e2`
 
 `settings.json` and new `tests/test_permissions.py` (16 tests; full suite 405
 OK, 5 skipped). `allow` gains read-only git (`ls-files`, `blame`, `describe`,
@@ -283,3 +283,28 @@ moves to Increment G (harmless no-ops: `git push --dry-run`, `git commit
 are literal prefixes, so spellings such as `git -C <dir> commit` or a relative
 `python3 bin/claude-workflow commit` are not matched and fall to the
 auto-mode classifier.
+
+### Increment C (2026-10-15): complete, not yet committed
+
+`snapshot()` in `bin/remote-runner` and `tests/test_remote_runner_snapshot.py`
+(27 tests; full suite 432 OK, 5 skipped). It builds a commit of the working
+tree on `HEAD` inside a temporary bare repository that borrows the source
+object store, so the source index, refs, stash, objects, and working tree are
+unchanged (asserted). Files are read with `O_NOFOLLOW` per path component and
+hashed with `--no-filters`; tracked files are compared by raw blob id because
+`git ls-files -m` runs clean filters (found by a failing test). Hooks,
+fsmonitor, and signing are disabled and ambient `GIT_*` variables are dropped.
+Identity is fixed (`remote-runner <noreply>`). `project_config()` gained
+`git_dir` so the contract is read from the snapshot.
+
+Refusals, path only and never content: no commit, unresolved conflicts,
+credential file names (`.env*` except templates, `id_*`, `.netrc`, `*.key`,
+`*.p12`, `.aws/credentials`, and similar), private-key content under any name,
+size over 64 MiB, over 5000 changed files, a symlinked parent directory, and a
+non-regular tracked replacement. Only content that differs from `HEAD` is
+scanned, because `HEAD` is already on origin.
+
+Notes: FIFOs and untracked nested repositories are skipped, as git does;
+submodule gitlinks keep their recorded commit; SHA-256 repositories are
+refused. Whole tracked tree is read to compare blob ids (IO cost on very large
+trees). Next: Increment D (bundle transport and worker action).
