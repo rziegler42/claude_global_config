@@ -399,12 +399,18 @@ session.
 Archived at the owner's instruction with two verification items outstanding;
 they are carried as deferred work rather than claimed complete:
 
-- The permission probes (`Read` of an absolute-path `.env` denied; `git push
-  --dry-run` prompts) were inconclusive in the installing session and have not
-  been repeated in a fresh session. If a fresh session does not enforce them,
-  the rule syntax needs a tests-first fix.
+- The permission probes were inconclusive in the installing session (it had
+  not reloaded `settings.json`). Repeated afterwards in a fresh headless
+  session (2026-10-15): `Read` of an absolute-path `.env` was denied while a
+  control `Read` of `a.txt` in the same directory and `git status` were
+  allowed, so the `**/.env` deny is enforced. `git push --dry-run` was not
+  granted, but a headless session cannot tell an ask rule from an unlisted
+  command; the prompt itself is confirmed only by the tests that assert the
+  rule and by an interactive check, not yet done.
 - Removal of `refs/snapshots/<job>` by a live `remote-runner prune --apply` on
-  `ned` is covered by local tests only.
+  `ned` is covered by local tests only. A prune of 50 unrelated old jobs on
+  `ned` ran on 2026-10-15 at the owner's instruction; the snapshot job was not
+  yet eligible.
 
 All other completion criteria were met: security reviews recorded with no
 unresolved Critical or High findings, snapshot job passed with matching
