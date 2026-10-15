@@ -1,0 +1,11 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort_default": "high",
+  "effort_ceiling": "xhigh",
+  "rounds_default": 3,
+  "rounds_ceiling": 5,
+  "timeout_seconds": 600,
+  "retries": 1,
+  "max_consecutive_failures": 2,
+  "prune_retention_days": 14
+}

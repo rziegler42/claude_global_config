@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 
-HELPERS = ("claude-workflow", "remote-runner")
+HELPERS = ("claude-workflow", "remote-runner", "ask-codex")
 SETTINGS = "settings.json"
 POLICY_FILE = "settings-policy.txt"
 PLUGIN_REGISTRY = os.path.join("plugins", "installed_plugins.json")

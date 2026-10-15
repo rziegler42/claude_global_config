@@ -1,0 +1,1509 @@
+#!/usr/bin/env python3
+"""Bounded, read-only Codex plan-review helper.
+
+Specification: docs/specs/second-opinion-plan-review.md
+
+Commands:
+  init                              prepare review state (no Codex call)
+  status                            show rounds, bound, effort, pending decisions
+  models                            list the models and efforts Codex offers
+  review-plan                       run one bounded review round
+  decide ID applied|rejected        record a decision on a finding
+
+All output is one JSON object on stdout:
+  {"status": "ok" | "stopped" | "error", ...}
+Exit codes: 0 success, 1 stopped by a stop condition, 2 usage or fatal error.
+"""
+import argparse
+import contextlib
+import datetime
+import fcntl
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = Path(__file__).resolve()
+TOOL_HOME = HERE.parent.parent / "ask-codex"
+
+HARD_ROUND_CEILING = 5
+EFFORTS = ("low", "medium", "high", "xhigh")
+SEVERITIES = ("blocker", "major", "minor", "nit")
+MEANINGFUL = ("blocker", "major")
+VERDICTS = ("changes_needed", "no_meaningful_changes")
+DEFAULT_PLAN = "docs/plans/next.md"
+KIND = "plan-review"
+STATE_SCHEMA = 1
+MAX_PLAN_BYTES = 2 * 1024 * 1024
+MAX_REASON = 2000
+STATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}-plan-review(-\d+)?", re.ASCII)
+FINDING_RE = re.compile(r"R(\d+)-F(\d+)", re.ASCII)
+ENV_PASS = ("PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
+ERROR_LINE = re.compile(r"^ERROR:\s*(\{.*\})\s*$")
+ROUND_FLOOR = 3
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
+MAX_FINDINGS = 100
+MAX_TEXT = 4000
+MAX_OUTPUT_BYTES = 1024 * 1024
+SEAL_KEY_NAME = ".seal-key"
+
+CONFIG_KEYS = {
+    "model": str,
+    "effort_default": str,
+    "effort_ceiling": str,
+    "rounds_default": int,
+    "rounds_ceiling": int,
+    "timeout_seconds": int,
+    "retries": int,
+    "max_consecutive_failures": int,
+    "prune_retention_days": int,
+}
+
+FIXES = {
+    "not_signed_in": "Sign in with `codex login`, then retry.",
+    "usage_limit": "Your ChatGPT usage allowance is exhausted or rate limited; wait for it to "
+                   "reset, or choose a lower effort.",
+    "model_unavailable": "Run `ask-codex models` and set a listed model in "
+                         "~/.claude/ask-codex/config.json (or pass --model).",
+    "effort_unsupported": "Choose an effort the model supports (see `ask-codex models`).",
+    "schema_invalid": "The review kind's schema.json is rejected by the API; fix the kind's schema.",
+    "codex_not_found": "Install the Codex CLI and sign in with `codex login`.",
+}
+
+
+class HelperError(Exception):
+    """A fatal, user-facing error; reported as JSON with exit code 2."""
+
+    def __init__(self, message, reason="error", fix=None, **details):
+        super().__init__(message)
+        self.reason = reason
+        self.fix = fix
+        self.details = details
+
+
+class Stop(Exception):
+    """A stop condition; reported as status "stopped" with exit code 1."""
+
+    def __init__(self, reason, message, **details):
+        super().__init__(message)
+        self.reason = reason
+        self.details = details
+
+
+class Transient(Exception):
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+class Fatal(Exception):
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+def emit(status, **details):
+    print(json.dumps({"status": status, **details}, ensure_ascii=True))
+
+
+def clean(text):
+    """Escape control characters so recorded text cannot drive a terminal."""
+    return "".join(
+        ch if ch == "\n" or (ch.isprintable() and ch != "\x7f") else "\\x%02x" % ord(ch)
+        for ch in str(text)
+    )
+
+
+def oneline(text):
+    """Collapse all whitespace (including newlines) so a field stays on one line."""
+    return " ".join(str(text).split())
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------
+# Configuration and review kinds
+
+
+def load_config():
+    path = TOOL_HOME / "config.json"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HelperError("config.json not found or unreadable: %s" % exc.__class__.__name__)
+    try:
+        config = json.loads(raw)
+    except ValueError as exc:
+        raise HelperError("config.json is not valid JSON: %s" % exc)
+    if not isinstance(config, dict):
+        raise HelperError("config.json must be a JSON object")
+    unknown = sorted(set(config) - set(CONFIG_KEYS))
+    if unknown:
+        raise HelperError("unknown key(s) in config.json: %s" % ", ".join(unknown))
+    for key, kind in CONFIG_KEYS.items():
+        if key not in config:
+            raise HelperError("config.json is missing %s (no fallback exists)" % key)
+        value = config[key]
+        if not isinstance(value, kind) or isinstance(value, bool):
+            raise HelperError("config.json: %s must be a %s" % (key, kind.__name__))
+    if not config["model"].strip():
+        raise HelperError("config.json: model must not be empty (no fallback exists)")
+    if not MODEL_RE.fullmatch(config["model"]):
+        raise HelperError("config.json: model must be a plain model name (letters, digits, . _ : -)")
+    for key in ("effort_default", "effort_ceiling"):
+        if config[key] not in EFFORTS:
+            raise HelperError("config.json: %s must be one of %s" % (key, ", ".join(EFFORTS)))
+    if EFFORTS.index(config["effort_default"]) > EFFORTS.index(config["effort_ceiling"]):
+        raise HelperError("config.json: effort_default exceeds effort_ceiling")
+    if not 1 <= config["rounds_ceiling"] <= HARD_ROUND_CEILING:
+        raise HelperError("config.json: rounds_ceiling must be 1..%d" % HARD_ROUND_CEILING)
+    if not 1 <= config["rounds_default"] <= config["rounds_ceiling"]:
+        raise HelperError(
+            "config.json: rounds_default must be 1..rounds_ceiling (%d)" % config["rounds_ceiling"]
+        )
+    bounds = {
+        "timeout_seconds": (1, 3600),
+        "retries": (0, 3),
+        "max_consecutive_failures": (1, 10),
+        "prune_retention_days": (1, 3650),
+    }
+    for key, (low, high) in bounds.items():
+        if not low <= config[key] <= high:
+            raise HelperError("config.json: %s must be %d..%d" % (key, low, high))
+    return config
+
+
+def check_strict(schema, where="schema"):
+    """Strict structured output: closed objects with every property required."""
+    if not isinstance(schema, dict):
+        return
+    types = schema.get("type")
+    types = types if isinstance(types, list) else [types]
+    if "object" in types or "properties" in schema:
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is not False:
+            raise HelperError("%s is not strict: %s needs additionalProperties: false" % (KIND, where))
+        if set(schema.get("required", [])) != set(properties):
+            raise HelperError(
+                "%s schema is not strict: %s must list every property in required" % (KIND, where)
+            )
+        for name, child in properties.items():
+            check_strict(child, "%s.%s" % (where, name))
+    if "items" in schema:
+        check_strict(schema["items"], where + "[]")
+
+
+def load_kind(name=KIND):
+    directory = TOOL_HOME / "kinds" / name
+    meta_path = directory / "kind.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HelperError("kind %s: kind.json is missing or invalid: %s" % (name, exc.__class__.__name__))
+    for key in ("prompt", "schema"):
+        target = directory / str(meta.get(key, ""))
+        if not meta.get(key) or not target.is_file():
+            raise HelperError("kind %s: missing %s file" % (name, key))
+    try:
+        schema = json.loads((directory / meta["schema"]).read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HelperError("kind %s: schema is not valid JSON: %s" % (name, exc))
+    check_strict(schema)
+    meta["directory"] = directory
+    meta["schema_path"] = directory / meta["schema"]
+    meta["prompt_path"] = directory / meta["prompt"]
+    return meta
+
+
+# --------------------------------------------------------------------------
+# Model catalogue (Codex's own, advisory)
+
+
+def catalogue_path():
+    home = os.environ.get("CODEX_HOME")
+    base = Path(home) if home else Path.home() / ".codex"
+    return base / "models_cache.json"
+
+
+def load_catalogue():
+    """Return (models by slug, warning). Never raises; the file is advisory."""
+    path = catalogue_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        models = {}
+        for entry in data["models"]:
+            levels = [lvl["effort"] for lvl in entry.get("supported_reasoning_levels", [])]
+            models[entry["slug"]] = {
+                "slug": entry["slug"],
+                "display_name": entry.get("display_name"),
+                "visibility": entry.get("visibility"),
+                "efforts": levels,
+                "upgrade": entry.get("upgrade"),
+                "context_window": entry.get("context_window"),
+            }
+        return models, None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return None, "catalogue unavailable (%s: %s); model not validated" % (
+            path.name, exc.__class__.__name__)
+
+
+def check_model(models, model, effort):
+    """Return (listed, effort_supported, upgrade) from the catalogue."""
+    entry = (models or {}).get(model)
+    if entry is None or entry["visibility"] != "list":
+        return False, False, None
+    return True, effort in entry["efforts"], entry["upgrade"]
+
+
+# --------------------------------------------------------------------------
+# Repository, plan, and plan identity
+
+
+def is_inside(path, root):
+    """True when `path` is `root` or below it, robust to symlinks and case."""
+    try:
+        current = os.path.realpath(path)
+        while True:
+            if os.path.samefile(current, root):
+                return True
+            parent = os.path.dirname(current)
+            if parent == current:
+                return False
+            current = parent
+    except OSError:
+        return False
+
+
+def repo_boundary(start):
+    """The nearest ancestor of `start` holding a .git entry (without running git)."""
+    current = os.path.realpath(start)
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return os.path.realpath(start)
+        current = parent
+
+
+def search_path(exclude_under=None):
+    """PATH entries that are absolute and outside `exclude_under` (never "", ".", or relative)."""
+    entries = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        if exclude_under and is_inside(entry, exclude_under):
+            continue
+        entries.append(entry)
+    return entries
+
+
+def which(name, entries, exclude_under=None):
+    for entry in entries:
+        candidate = os.path.join(entry, name)
+        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+            continue
+        if exclude_under and is_inside(candidate, exclude_under):
+            continue  # a symlink that resolves into the repository
+        return candidate
+    return None
+
+
+_GIT = []
+
+
+def git_executable():
+    if not _GIT:
+        boundary = repo_boundary(os.getcwd())
+        found = which("git", search_path(exclude_under=boundary), exclude_under=boundary)
+        if not found:
+            raise HelperError("git was not found in an absolute PATH entry outside the working tree")
+        _GIT.append(found)
+    return _GIT[0]
+
+
+def git_output(args, cwd):
+    result = subprocess.run([git_executable()] + args, cwd=str(cwd), capture_output=True, text=True)
+    if result.returncode:
+        return None
+    return result.stdout.strip()
+
+
+def repo_root():
+    top = git_output(["rev-parse", "--show-toplevel"], Path.cwd())
+    if not top:
+        raise HelperError("not inside a git repository")
+    return Path(top).resolve()
+
+
+def resolve_plan(root, argument):
+    if any(not ch.isprintable() for ch in (argument or DEFAULT_PLAN)):
+        raise HelperError("plan path contains control or non-printable characters; refusing it")
+    raw = Path(argument or DEFAULT_PLAN)
+    candidate = raw if raw.is_absolute() else root / raw
+    if candidate.is_symlink():
+        raise HelperError("plan path is a symlink: refusing %s" % clean(argument or DEFAULT_PLAN))
+    real = candidate.resolve()
+    if real != root and root not in real.parents:
+        raise HelperError("plan must be inside the repository: %s" % clean(argument or DEFAULT_PLAN))
+    if not real.exists():
+        raise HelperError("plan not found: %s" % clean(argument or DEFAULT_PLAN))
+    if not real.is_file():
+        raise HelperError("plan is not a regular file: %s" % clean(argument or DEFAULT_PLAN))
+    if real.stat().st_size > MAX_PLAN_BYTES:
+        raise HelperError("plan is larger than %d bytes" % MAX_PLAN_BYTES)
+    try:
+        text = real.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HelperError("plan is not readable text: %s" % exc.__class__.__name__)
+    if not text.strip():
+        raise HelperError("plan is empty")
+    if re.search(r"^Status:\s*Empty\b", text, re.MULTILINE):
+        raise HelperError("plan is the empty template: there is no active plan")
+    heading = re.search(r"^# (.+)$", text, re.MULTILINE)
+    if not heading:
+        raise HelperError("plan has no top-level heading")
+    created = re.search(r"^Created:\s*(\S+)", text, re.MULTILINE)
+    if not created:
+        raise HelperError("plan has no Created: line")
+    key = hashlib.sha256(
+        ("%s\n%s" % (heading.group(1).strip(), created.group(1))).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        "path": real,
+        "relative": real.relative_to(root).as_posix(),
+        "title": heading.group(1).strip(),
+        "created": created.group(1),
+        "key": key,
+    }
+
+
+def ensure_excluded(root):
+    """Add /.debug/ to .git/info/exclude when missing; return True if added."""
+    git_path = git_output(["rev-parse", "--git-path", "info/exclude"], root)
+    if not git_path:
+        raise HelperError("cannot locate .git/info/exclude")
+    path = Path(git_path)
+    if not path.is_absolute():
+        path = root / path
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    wanted = {"/.debug/", ".debug/", "/.debug", ".debug"}
+    if any(line.strip() in wanted for line in existing.splitlines()):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        if existing and not existing.endswith("\n"):
+            handle.write("\n")
+        handle.write("/.debug/\n")
+    return True
+
+
+# --------------------------------------------------------------------------
+# Review state
+
+
+def atomic_write(path, text):
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=str(path.parent), prefix=".tmp-", delete=False
+    )
+    try:
+        os.chmod(handle.name, 0o600)
+        with handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(handle.name)
+        raise
+
+
+def seal_key(create=False):
+    """The per-machine tamper-evidence key (private, never inside a repository)."""
+    path = TOOL_HOME / SEAL_KEY_NAME
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(path), flags)
+    except FileNotFoundError:
+        if not create:
+            return None
+        # Create the key atomically (temp file, then link) so a crash can never
+        # leave an empty key behind.
+        temporary = TOOL_HOME / ("%s.tmp-%d" % (SEAL_KEY_NAME, os.getpid()))
+        handle_fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                            | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(handle_fd, "w") as handle:
+                handle.write(os.urandom(32).hex() + "\n")
+            try:
+                os.link(str(temporary), str(path))
+            except FileExistsError:
+                pass
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(str(temporary))
+        descriptor = os.open(str(path), flags)
+    with os.fdopen(descriptor) as handle:
+        text = handle.read().strip()
+    try:
+        return bytes.fromhex(text) if len(text) == 64 else None
+    except ValueError:
+        return None
+
+
+def canonical(state):
+    body = {k: v for k, v in state.items() if k != "_seal"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def seal_matches(state):
+    key = seal_key()
+    value = state.get("_seal") if isinstance(state, dict) else None
+    if key is None or not isinstance(value, str):
+        return False
+    expected = hmac.new(key, canonical(state), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, value)
+
+
+def peek_state(directory):
+    """Raw, unverified state.json content, or None when unreadable."""
+    try:
+        data = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_state(directory):
+    state = peek_state(directory)
+    if state is None:
+        raise HelperError(
+            "review state is corrupt or unreadable; not resetting it: %s" % directory.name)
+    if not seal_matches(state):
+        raise HelperError(
+            "review state was modified outside ask-codex (seal does not verify): %s. "
+            "Ask the owner to inspect it; it is not reset automatically." % directory.name,
+            reason="tampered")
+    required = ("schema_version", "plan_key", "rounds_used", "bound", "effort", "model",
+                "grants", "decisions", "closed")
+    if state.get("schema_version") != STATE_SCHEMA or any(key not in state for key in required):
+        raise HelperError("review state has an unexpected format: %s" % directory.name)
+    return state
+
+
+def write_state(directory, state):
+    key = seal_key(create=True)
+    if key is None:
+        raise HelperError("the seal key is unreadable or malformed: %s" % (TOOL_HOME / SEAL_KEY_NAME))
+    body = {k: v for k, v in state.items() if k != "_seal"}
+    body["_seal"] = hmac.new(key, canonical(body), hashlib.sha256).hexdigest()
+    atomic_write(directory / "state.json", json.dumps(body, indent=2, sort_keys=True) + "\n")
+
+
+def debug_directory(root):
+    debug = root / ".debug"
+    if debug.is_symlink():
+        raise HelperError(".debug is a symlink; refusing to read or write review state through it")
+    return debug
+
+
+def state_directories(root):
+    debug = debug_directory(root)
+    if not debug.is_dir():
+        return []
+    return sorted(p for p in debug.iterdir()
+                  if p.is_dir() and not p.is_symlink() and STATE_DIR_RE.fullmatch(p.name))
+
+
+def find_state(root, plan):
+    """Return (directory, state) for this plan, or (None, None).
+
+    An open review belongs to its plan file: editing the title or the Created
+    line must not open a fresh review (and so reset the bound). A closed review
+    is matched only by exact plan identity.
+    """
+    open_match = closed_match = (None, None)
+    for directory in state_directories(root):
+        if not (directory / "state.json").exists():
+            continue
+        raw = peek_state(directory)
+        if raw is None:
+            raise HelperError("review state is corrupt or unreadable; not resetting it: %s"
+                              % directory.name)
+        recorded = raw.get("plan")
+        same_path = recorded == plan["relative"]
+        if not same_path and isinstance(recorded, str):
+            # Another spelling of the same file (case-insensitive filesystem, hard link).
+            with contextlib.suppress(OSError, ValueError):
+                same_path = os.path.samefile(str(root / recorded), str(plan["path"]))
+        same_key = raw.get("plan_key") == plan["key"] or plan["key"] in (raw.get("closed_keys") or [])
+        if not (same_path or same_key):
+            continue
+        state = read_state(directory)
+        if state["closed"]:
+            if same_key:
+                closed_match = (directory, state)
+        else:
+            open_match = (directory, state)
+    return open_match if open_match[0] is not None else closed_match
+
+
+def new_state(config, plan):
+    return {
+        "schema_version": STATE_SCHEMA,
+        "kind": KIND,
+        "plan": plan["relative"],
+        "plan_key": plan["key"],
+        "title": plan["title"],
+        "plan_created": plan["created"],
+        "started": now(),
+        "rounds_used": 0,
+        "bound": config["rounds_default"],
+        "effort": config["effort_default"],
+        "effort_ceiling": config["effort_ceiling"],
+        "model": config["model"],
+        "failures": 0,
+        "grants": [],
+        "decisions": {},
+        "lineage": {},
+        "reraises": {},
+        "escalation": None,
+        "escalations": [],
+        "window_start": 0,
+        "blocked": None,
+        "closed": None,
+    }
+
+
+def record_escalation(state, escalation):
+    state["escalation"] = escalation
+    state.setdefault("escalations", []).append(dict(escalation))
+
+
+def create_state_directory(root):
+    debug = debug_directory(root)
+    debug.mkdir(mode=0o700, exist_ok=True)
+    day = datetime.date.today().isoformat()
+    candidate, counter = debug / ("%s-plan-review" % day), 2
+    while True:
+        try:
+            candidate.mkdir(mode=0o700)
+            return candidate
+        except FileExistsError:
+            candidate = debug / ("%s-plan-review-%d" % (day, counter))
+            counter += 1
+
+
+@contextlib.contextmanager
+def locked(directory):
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(directory / ".lock"), flags, 0o600)
+    except OSError as exc:
+        raise HelperError("cannot open the review lock safely (%s); not following links"
+                          % exc.__class__.__name__, reason="unsafe_state")
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise HelperError(
+                "another ask-codex command is running for this plan (lock held)",
+                reason="locked",
+            )
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def load_round(directory, number, state):
+    path = directory / ("round-%d.json" % number)
+    expected = (state.get("round_digests") or {}).get(str(number))
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise HelperError("round %d data is missing: %s" % (number, exc.__class__.__name__))
+    if expected is None or hashlib.sha256(raw).hexdigest() != expected:
+        raise HelperError("round %d data was modified outside ask-codex" % number, reason="tampered")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        raise HelperError("round %d data is corrupt: %s" % (number, exc.__class__.__name__))
+
+
+def all_findings(directory, state):
+    findings = []
+    for number in range(1, state["rounds_used"] + 1):
+        data = load_round(directory, number, state)
+        for finding in data.get("result", {}).get("findings", []):
+            findings.append(dict(finding, round=number))
+    return findings
+
+
+def pending_decisions(directory, state):
+    return [
+        f["id"] for f in all_findings(directory, state)
+        if f.get("severity") in MEANINGFUL and not f.get("suppressed")
+        and f["id"] not in state["decisions"]
+    ]
+
+
+def render_ledger(directory, state):
+    lines = [
+        "# Review ledger",
+        "",
+        "Plan: %s" % clean(state.get("plan", "")),
+        "Plan key: %s" % state["plan_key"],
+        "Model: %s, effort: %s" % (clean(state["model"]), clean(state["effort"])),
+        "Rounds used: %d of %d" % (state["rounds_used"], state["bound"]),
+        "",
+    ]
+    for finding in all_findings(directory, state):
+        decision = state["decisions"].get(finding["id"])
+        status = decision["decision"] if decision else (
+            "suppressed" if finding.get("suppressed") else "undecided")
+        lines.append("- %s [%s] %s: %s (%s)" % (
+            finding["id"], finding.get("severity", "?"), status,
+            oneline(clean(finding.get("problem", ""))), oneline(clean(finding.get("location", "")))))
+        if decision and decision.get("reason"):
+            lines.append("  - reason: %s" % oneline(clean(decision["reason"])))
+    lines.append("")
+    atomic_write(directory / "ledger.md", "\n".join(lines))
+
+
+def prompt_ledger(state):
+    """Decisions so far, as shown to Codex."""
+    rows = []
+    for finding_id in sorted(state["decisions"], key=lambda k: tuple(int(n) for n in FINDING_RE.fullmatch(k).groups())):
+        item = state["decisions"][finding_id]
+        label = "APPLIED" if item["decision"] == "applied" else "REJECTED"
+        line = "- %s [%s] %s: %s" % (finding_id, item.get("severity"), label,
+                                     oneline(item.get("problem", "")))
+        if item.get("reason"):
+            line += " (reason: %s)" % oneline(item["reason"])
+        rows.append(line)
+    return "\n".join(rows) if rows else "None yet."
+
+
+# --------------------------------------------------------------------------
+# Running Codex
+
+
+def codex_environment(root):
+    env = {name: os.environ[name] for name in ENV_PASS if name in os.environ}
+    env["PATH"] = os.pathsep.join(search_path(exclude_under=str(root)))
+    return env
+
+
+def classify_failure(returncode, stdout, stderr, timed_out):
+    """Return a Fatal or Transient exception describing a failed Codex call."""
+    if timed_out:
+        return Transient("timeout", "codex did not finish before the timeout")
+    error = None
+    for line in (stderr + "\n" + stdout).splitlines():
+        match = ERROR_LINE.match(line.strip())
+        if match:
+            try:
+                error = json.loads(match.group(1))
+            except ValueError:
+                continue
+    if error is None:
+        return Transient("codex_failed", "codex exited with status %s and no error detail" % returncode)
+    detail = error.get("error") if isinstance(error.get("error"), dict) else {}
+    status = error.get("status")
+    message = str(detail.get("message") or error.get("message") or "")
+    code = str(detail.get("code") or "")
+    lowered = message.lower()
+    if code == "invalid_json_schema" or "invalid schema" in lowered:
+        return Fatal("schema_invalid", message)
+    if status in (401, 403) or re.search(r"sign(ed)?[ -]?in|log ?in|authenticat|unauthori[sz]ed|bearer", lowered):
+        return Fatal("not_signed_in", message)
+    if status == 429 or re.search(r"usage limit|rate limit|quota|too many requests", lowered):
+        return Fatal("usage_limit", message)
+    if status == 400 and re.search(r"model.*(not supported|not found|does not exist)|unknown model", lowered):
+        return Fatal("model_unavailable", message)
+    if status == 400 and re.search(r"reasoning|effort|supported values", lowered):
+        return Fatal("effort_unsupported", message)
+    return Transient("codex_error", message or "codex reported an error")
+
+
+def validate_result(data):
+    """Validate the structured review against the strict schema."""
+    def fail(message):
+        raise Transient("bad_output", "review output rejected: %s" % message)
+
+    if not isinstance(data, dict) or set(data) != {"summary", "verdict", "findings"}:
+        fail("top-level keys")
+    if not isinstance(data["summary"], str):
+        fail("summary must be a string")
+    if data["verdict"] not in VERDICTS:
+        fail("verdict")
+    if not isinstance(data["findings"], list):
+        fail("findings must be a list")
+    if len(data["findings"]) > MAX_FINDINGS:
+        fail("more than %d findings" % MAX_FINDINGS)
+    if len(data["summary"]) > MAX_TEXT:
+        fail("summary is too long")
+    keys = {"severity", "location", "problem", "suggestion", "reraises", "new_evidence"}
+    for item in data["findings"]:
+        if not isinstance(item, dict) or set(item) != keys:
+            fail("finding keys")
+        if item["severity"] not in SEVERITIES:
+            fail("finding severity")
+        for name in ("location", "problem", "suggestion"):
+            if not isinstance(item[name], str):
+                fail("finding %s must be a string" % name)
+        for name in ("reraises", "new_evidence"):
+            if item[name] is not None and not isinstance(item[name], str):
+                fail("finding %s must be a string or null" % name)
+        if any(len(str(item[name] or "")) > MAX_TEXT for name in item):
+            fail("a finding field is too long")
+
+
+def run_codex(argv, prompt, env, cwd, timeout):
+    """Run one Codex call; return (stdout, stderr, returncode, timed_out)."""
+    try:
+        process = subprocess.Popen(
+            argv, cwd=str(cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except FileNotFoundError:
+        raise Fatal("codex_not_found", "the codex executable was not found on PATH")
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(input=prompt, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Codex itself may have finished while a leftover process holds the pipes.
+        timed_out = process.poll() is None
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            # A grandchild escaped the process group and still holds the pipes.
+            process.kill()
+            for stream in (process.stdout, process.stderr):
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
+            stdout = stderr = ""
+        if timed_out:
+            process.wait()
+    return stdout or "", stderr or "", process.returncode, timed_out
+
+
+def usage_from(stdout):
+    usage = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+    return usage
+
+
+def signature(finding):
+    words = lambda text: " ".join(re.findall(r"[a-z0-9]+", str(text).lower()))
+    return "%s|%s" % (words(finding.get("location", "")), words(finding.get("problem", "")))
+
+
+# --------------------------------------------------------------------------
+# Commands
+
+
+def context(plan_argument):
+    config = load_config()
+    kind = load_kind()
+    root = repo_root()
+    plan = resolve_plan(root, plan_argument)
+    return config, kind, root, plan
+
+
+def catalogue_summary(config, state):
+    models, warning = load_catalogue()
+    model = (state or {}).get("model") or config["model"]
+    effort = (state or {}).get("effort") or config["effort_default"]
+    if models is None:
+        return {"available": False, "warning": warning, "model_listed": None,
+                "effort_supported": None, "upgrade": None}
+    listed, supported, upgrade = check_model(models, model, effort)
+    return {"available": True, "warning": None, "model_listed": listed,
+            "effort_supported": supported, "upgrade": upgrade}
+
+
+def summary(config, root, plan, directory, state):
+    effective = state or new_state(config, plan)
+    return {
+        "plan": plan["relative"],
+        "plan_key": plan["key"],
+        "state_dir": directory.relative_to(root).as_posix() if directory else None,
+        "model": effective["model"] if state else config["model"],
+        "effort": effective["effort"],
+        "effort_ceiling": effective["effort_ceiling"],
+        "rounds_used": effective["rounds_used"],
+        "bound": effective["bound"],
+        "failures": effective["failures"],
+        "grants": effective["grants"],
+        "blocked": effective.get("blocked"),
+        "closed": effective["closed"],
+        "pending_decisions": pending_decisions(directory, state) if state else [],
+    }
+
+
+def ensure_state(config, root, plan):
+    """Return (directory, state, created, exclude_added), creating state if needed."""
+    if seal_key(create=True) is None:
+        raise HelperError(
+            "the seal key %s is unreadable or malformed; no review state was created"
+            % (TOOL_HOME / SEAL_KEY_NAME), reason="seal_key_invalid",
+            fix="Remove the malformed key file only after confirming no review is in progress; "
+                "a new key is created on the next run, and state sealed with the old key is "
+                "then reported as tampered.")
+    exclude_added = ensure_excluded(root)
+    debug = debug_directory(root)
+    debug.mkdir(mode=0o700, exist_ok=True)
+    # One lock around find-and-create so concurrent first starts make one review.
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(debug / ".lock"), flags, 0o600)
+    except OSError as exc:
+        raise HelperError("cannot open the .debug lock safely (%s)" % exc.__class__.__name__,
+                          reason="unsafe_state")
+    try:
+        deadline = time.time() + 10
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    raise HelperError("another ask-codex command holds the .debug lock; try again",
+                                      reason="locked")
+                time.sleep(0.1)
+        directory, state = find_state(root, plan)
+        if state and state["closed"]:
+            raise HelperError(
+                "this review is closed (%s); a closed review cannot be reopened" % state["closed"],
+                reason="closed")
+        created = False
+        if state is None:
+            directory = create_state_directory(root)
+            state = new_state(config, plan)
+            with locked(directory):
+                write_state(directory, state)
+            created = True
+    finally:
+        os.close(descriptor)
+    return directory, state, created, exclude_added
+
+
+def command_status(args):
+    config, kind, root, plan = context(args.plan)
+    directory, state = find_state(root, plan)
+    data = summary(config, root, plan, directory, state)
+    data["catalogue"] = catalogue_summary(config, state)
+    emit("ok", **data)
+
+
+def command_init(args):
+    config, kind, root, plan = context(args.plan)
+    directory, state, created, exclude_added = ensure_state(config, root, plan)
+    emit("ok", exclude_added=exclude_added, created=created,
+         **summary(config, root, plan, directory, state))
+
+
+def command_models(args):
+    config = load_config()
+    models, warning = load_catalogue()
+    listed = []
+    for entry in (models or {}).values():
+        listed.append(dict(entry))
+    listed.sort(key=lambda m: m["slug"])
+    state_model, effort = config["model"], config["effort_default"]
+    info = {"model": state_model, "effort": effort, "listed": None, "effort_supported": None,
+            "upgrade": None}
+    if models is not None:
+        info["listed"], info["effort_supported"], info["upgrade"] = check_model(models, state_model, effort)
+    emit("ok", catalogue_path=str(catalogue_path()), available=models is not None, warning=warning,
+         models=listed, configured=info)
+
+
+def command_decide(args):
+    config, kind, root, plan = context(args.plan)
+    directory, state = find_state(root, plan)
+    if state is None:
+        raise HelperError("no review state exists for this plan; run init first")
+    with locked(directory):
+        state = read_state(directory)
+        if state["closed"]:
+            raise HelperError("this review is closed; decisions can no longer be recorded",
+                              reason="closed")
+        match = FINDING_RE.fullmatch(args.finding)
+        if not match:
+            raise HelperError("unknown finding id: %s" % clean(args.finding))
+        number = int(match.group(1))
+        if number < 1 or number > state["rounds_used"]:
+            raise HelperError("unknown finding id: %s" % clean(args.finding))
+        findings = {f["id"]: f for f in load_round(directory, number, state).get("result", {}).get("findings", [])}
+        finding = findings.get(args.finding)
+        if finding is None:
+            raise HelperError("unknown finding id: %s" % clean(args.finding))
+        if number < state["rounds_used"]:
+            raise HelperError(
+                "%s belongs to round %d and a later round has run; its decision is final"
+                % (args.finding, number)
+            )
+        reason = (args.reason or "").strip()
+        if len(reason) > MAX_REASON:
+            raise HelperError("reason is longer than %d characters" % MAX_REASON)
+        if args.decision == "rejected" and not reason:
+            raise HelperError("a rejection requires a non-empty --reason")
+        state["decisions"][args.finding] = {
+            "decision": args.decision,
+            "reason": oneline(clean(reason)),
+            "round": number,
+            "severity": finding.get("severity"),
+            "location": oneline(clean(finding.get("location", ""))),
+            "problem": oneline(clean(finding.get("problem", ""))),
+            "decided_at": now(),
+        }
+        write_state(directory, state)
+        render_ledger(directory, state)
+        pending = pending_decisions(directory, state)
+    emit("ok", finding=args.finding, decision=args.decision, pending_decisions=pending)
+
+
+def stop_details(directory, state):
+    rejected = [
+        {"id": fid, "reason": d.get("reason"), "problem": d.get("problem")}
+        for fid, d in state["decisions"].items() if d["decision"] == "rejected"
+    ]
+    return {"rounds_used": state["rounds_used"], "bound": state["bound"],
+            "pending_decisions": pending_decisions(directory, state), "rejected": rejected}
+
+
+def command_review_plan(args):
+    config, kind, root, plan = context(args.plan)
+
+    # Per-request arguments are validated before anything is written.
+    effort_override = args.effort
+    if effort_override is not None:
+        if effort_override not in EFFORTS:
+            raise HelperError("--effort must be one of %s (max and ultra are never used)"
+                              % ", ".join(EFFORTS), reason="usage")
+        if EFFORTS.index(effort_override) > EFFORTS.index(config["effort_ceiling"]):
+            raise HelperError("--effort %s exceeds the ceiling %s"
+                              % (effort_override, config["effort_ceiling"]), reason="usage")
+    if args.max_rounds is not None and args.max_rounds < 1:
+        raise HelperError("--max-rounds must be at least 1", reason="usage")
+    if args.model is not None and not MODEL_RE.fullmatch(args.model):
+        raise HelperError("--model must be a plain model name (letters, digits, . _ : -)",
+                          reason="usage")
+
+    directory, state, created, exclude_added = ensure_state(config, root, plan)
+    warnings = []
+    with locked(directory):
+        state = read_state(directory)
+        if state["closed"]:
+            raise HelperError("this review is closed", reason="closed")
+        for other in state_directories(root):
+            if other == directory:
+                continue
+            raw = peek_state(other)
+            if (raw and not raw.get("closed") and isinstance(raw.get("rounds_used"), int)
+                    and isinstance(raw.get("bound"), int) and raw["rounds_used"] >= raw["bound"]):
+                warnings.append(
+                    "another open review in this repository (%s) has used its full bound; "
+                    "a copied or retitled plan does not get a fresh bound without the owner"
+                    % clean(raw.get("plan", other.name)))
+        if state["plan_key"] != plan["key"]:
+            warnings.append(
+                "plan identity changed since the review started (title or Created line); "
+                "the review continues because rounds are tied to the plan file")
+        if state.get("blocked"):
+            blocked = state["blocked"]
+            raise Stop("reraise_escalation",
+                       "a rejected finding was re-raised a second time; owner input is required",
+                       finding=blocked.get("finding"), **stop_details(directory, state))
+        if args.max_rounds is not None:
+            if state["rounds_used"] > 0:
+                raise HelperError(
+                    "--max-rounds can only be given when the review starts; use `extend` afterwards",
+                    reason="usage")
+            requested = args.max_rounds
+            ceiling = min(config["rounds_ceiling"], HARD_ROUND_CEILING)
+            if requested > ceiling:
+                warnings.append("--max-rounds %d clamped to the ceiling of %d" % (requested, ceiling))
+                requested = ceiling
+            state["bound"] = requested
+        if state["rounds_used"] >= state["bound"]:
+            raise Stop("bound_reached",
+                       "the review bound of %d rounds is reached; ask the owner whether to extend"
+                       % state["bound"], **stop_details(directory, state))
+        pending = pending_decisions(directory, state)
+        if pending:
+            raise HelperError(
+                "decide every blocker and major finding from the previous round first: %s"
+                % ", ".join(pending),
+                reason="undecided_findings", pending_decisions=pending)
+
+        number = state["rounds_used"] + 1
+        model = args.model or config["model"]
+
+        # Effort: persisted escalation (signal or round floor) unless overridden.
+        previous_effort = state["effort"]
+        persisted_effort = state["effort"]
+        escalation = state.get("escalation")
+        round_rule = None
+        window_round = number - state.get("window_start", 0)
+        if (window_round >= ROUND_FLOOR and
+                EFFORTS.index(persisted_effort) < EFFORTS.index(config["effort_ceiling"])):
+            persisted_effort = config["effort_ceiling"]
+            round_rule = {"round": number, "from": previous_effort, "to": persisted_effort,
+                          "reason": "round %d reached (round %d of this review window)"
+                                    % (number, window_round)}
+        effort = effort_override or persisted_effort
+
+        # Validate model and effort against Codex's catalogue (advisory file).
+        models, catalogue_warning = load_catalogue()
+        if catalogue_warning:
+            warnings.append(catalogue_warning)
+        if models is not None:
+            listed, supported, upgrade = check_model(models, model, effort)
+            if not listed:
+                raise HelperError("model %s is not offered by Codex (missing or hidden)" % clean(model),
+                                  reason="model_unavailable", fix=FIXES["model_unavailable"])
+            if not supported:
+                raise HelperError("model %s does not support effort %s" % (clean(model), effort),
+                                  reason="effort_unsupported", fix=FIXES["effort_unsupported"])
+            if upgrade:
+                warnings.append("model %s has been superseded; Codex suggests %s" % (model, upgrade))
+
+        # Build the prompt.
+        template = kind["prompt_path"].read_text(encoding="utf-8")
+        prompt = (template.replace("{{ROUND}}", str(number))
+                  .replace("{{PLAN_PATH}}", plan["relative"])
+                  .replace("{{LEDGER}}", prompt_ledger(state)))
+        out_path = directory / ("round-%d.codex-output.json" % number)
+        codex_path = which("codex", search_path(exclude_under=str(root)), exclude_under=str(root))
+        if codex_path is None:
+            raise HelperError(
+                "the codex executable was not found in an absolute PATH entry outside the repository",
+                reason="codex_not_found", fix=FIXES["codex_not_found"])
+        argv = [codex_path, "exec", "-s", "read-only", "--ephemeral", "--ignore-user-config", "--json",
+                "-m", model, "-c", 'model_reasoning_effort="%s"' % effort,
+                "--output-schema", str(kind["schema_path"]), "-o", str(out_path),
+                "-C", str(root), "-"]
+        env = codex_environment(root)
+
+        attempts = 1 + config["retries"]
+        if state["failures"] >= config["max_consecutive_failures"]:
+            attempts = 1  # at the cap already: one deliberate attempt, no retry
+        started = now()
+        began = time.time()
+        result = usage = None
+        last_error = None
+        for attempt in range(attempts):
+            with contextlib.suppress(OSError):
+                out_path.unlink()
+            try:
+                stdout, stderr, code, timed_out = run_codex(
+                    argv, prompt, env, root, config["timeout_seconds"])
+                if timed_out or code != 0:
+                    raise classify_failure(code, stdout, stderr, timed_out)
+                try:
+                    if out_path.stat().st_size > MAX_OUTPUT_BYTES:
+                        raise Transient("bad_output", "review output is larger than %d bytes"
+                                        % MAX_OUTPUT_BYTES)
+                    result = json.loads(out_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, RecursionError) as exc:
+                    raise Transient("bad_output", "review output is missing or not JSON (%s)"
+                                    % exc.__class__.__name__)
+                validate_result(result)
+                usage = usage_from(stdout)
+                break
+            except Fatal as exc:
+                raise HelperError(str(exc), reason=exc.reason, fix=FIXES.get(exc.reason))
+            except Transient as exc:
+                result = None
+                last_error = exc
+                state["failures"] += 1
+                write_state(directory, state)
+                if state["failures"] >= config["max_consecutive_failures"]:
+                    break
+        with contextlib.suppress(OSError):
+            out_path.unlink()
+        if result is None:
+            raise Stop("failure_cap",
+                       "codex failed %d consecutive time(s); last error (%s): %s"
+                       % (state["failures"], last_error.reason, clean(last_error)),
+                       last_error=last_error.reason, failures=state["failures"],
+                       **stop_details(directory, state))
+
+        # A complete, valid review: record the round.
+        finished = now()
+        decisions = state["decisions"]
+        lineage = state.setdefault("lineage", {})
+        counts = state.setdefault("reraises", {})
+        previous_signatures = set()
+        if number > 1:
+            for item in load_round(directory, number - 1, state).get("result", {}).get("findings", []):
+                if item["severity"] in MEANINGFUL and not item.get("suppressed"):
+                    previous_signatures.add(signature(item))
+        signals = []
+        escalate_stop = None
+        findings = []
+        for index, item in enumerate(result["findings"], 1):
+            record = dict(item)
+            record["id"] = "R%d-F%d" % (number, index)
+            record["suppressed"] = False
+            reference = item.get("reraises")
+            if reference and reference in decisions and decisions[reference]["decision"] == "rejected":
+                evidence = (item.get("new_evidence") or "").strip()
+                root_id = lineage.get(reference, reference)
+                if not evidence:
+                    record["suppressed"] = True
+                    record["suppressed_reason"] = "re-raise without new evidence"
+                else:
+                    counts[root_id] = counts.get(root_id, 0) + 1
+                    lineage[record["id"]] = root_id
+                    record["reraise_of"] = root_id
+                    record["reraise_count"] = counts[root_id]
+                    signals.append("rejected finding %s was re-raised" % root_id)
+                    if counts[root_id] >= 2 and escalate_stop is None:
+                        escalate_stop = root_id
+            elif reference:
+                record["reraises_ignored"] = True
+            findings.append(record)
+        active = [f for f in findings if not f["suppressed"]]
+        if any(f["severity"] in MEANINGFUL and signature(f) in previous_signatures for f in active):
+            signals.append("the same blocker or major finding appeared in two consecutive rounds")
+        meaningful = [f for f in active if f["severity"] in MEANINGFUL]
+        recomputed = "changes_needed" if meaningful else "no_meaningful_changes"
+        mismatch = result["verdict"] != recomputed
+
+        effort_changed = None
+        if round_rule and not effort_override:
+            state["effort"] = persisted_effort
+            record_escalation(state, round_rule)
+            effort_changed = {"from": round_rule["from"], "to": round_rule["to"], "reason": round_rule["reason"]}
+        elif (escalation and escalation.get("round") == number and not effort_override
+              and escalation.get("to") == state["effort"]):
+            effort_changed = {"from": escalation["from"], "to": escalation["to"], "reason": escalation["reason"]}
+        if signals and EFFORTS.index(state["effort"]) < EFFORTS.index(config["effort_ceiling"]):
+            record_escalation(state, {"round": number + 1, "from": state["effort"],
+                                      "to": config["effort_ceiling"], "reason": "; ".join(signals)})
+            state["effort"] = config["effort_ceiling"]
+
+        round_record = {
+            "round": number, "model": model, "effort": effort, "started": started, "finished": finished,
+            "seconds": round(time.time() - began, 1), "usage": usage, "warnings": warnings,
+            "result": {"summary": result["summary"], "verdict": result["verdict"], "findings": findings},
+        }
+        round_text = json.dumps(round_record, indent=2) + "\n"
+        atomic_write(directory / ("round-%d.json" % number), round_text)
+        state.setdefault("round_digests", {})[str(number)] = hashlib.sha256(
+            round_text.encode("utf-8")).hexdigest()
+        state["rounds_used"] = number
+        state["failures"] = 0
+        state["model"] = config["model"]
+        if escalate_stop:
+            state["blocked"] = {"reason": "reraise_escalation", "finding": escalate_stop, "round": number}
+        write_state(directory, state)
+        render_ledger(directory, state)
+        pending = pending_decisions(directory, state)
+
+        report = {
+            "round": number,
+            "rounds_used": number,
+            "bound": state["bound"],
+            "rounds_remaining": max(state["bound"] - number, 0),
+            "model": model,
+            "effort": effort,
+            "effort_changed": effort_changed,
+            "outcome": "converged" if not meaningful else "changes_needed",
+            "verdict_mismatch": mismatch,
+            "summary": clean(result["summary"]),
+            "findings": [dict(f, location=clean(f["location"]), problem=clean(f["problem"]),
+                              suggestion=clean(f["suggestion"])) for f in findings],
+            "pending_decisions": pending,
+            "usage": usage or {},
+            "warnings": warnings,
+            "state_dir": directory.relative_to(root).as_posix(),
+        }
+    if escalate_stop:
+        raise Stop("reraise_escalation",
+                   "finding %s was re-raised a second time after rejection; owner input is required"
+                   % escalate_stop, finding=escalate_stop, round_report=report,
+                   **stop_details(directory, state))
+    emit("ok", **report)
+
+
+def open_review(args):
+    """Resolve the plan's review state; refuse when absent or closed."""
+    config, kind, root, plan = context(args.plan)
+    directory, state = find_state(root, plan)
+    if state is None:
+        raise HelperError("no review state exists for this plan; run a review first")
+    return config, root, plan, directory
+
+
+def command_extend(args):
+    if not 1 <= args.rounds <= HARD_ROUND_CEILING:
+        raise HelperError("extend takes 1..%d rounds" % HARD_ROUND_CEILING, reason="usage")
+    config, root, plan, directory = open_review(args)
+    with locked(directory):
+        state = read_state(directory)
+        if state["closed"]:
+            raise HelperError("this review is closed", reason="closed")
+        base = max(state["bound"], state["rounds_used"])
+        remaining = base + args.rounds - state["rounds_used"]
+        if remaining > HARD_ROUND_CEILING:
+            raise HelperError(
+                "extending by %d would leave %d rounds; at most %d may remain"
+                % (args.rounds, remaining, HARD_ROUND_CEILING))
+        cleared = state.get("blocked") is not None
+        state["grants"].append({"type": "extend", "rounds": args.rounds, "at": now(),
+                                "bound_before": state["bound"], "bound_after": base + args.rounds,
+                                "cleared_block": cleared})
+        state["bound"] = base + args.rounds
+        state["blocked"] = None
+        write_state(directory, state)
+        render_ledger(directory, state)
+    emit("ok", bound=state["bound"], rounds_used=state["rounds_used"],
+         rounds_remaining=state["bound"] - state["rounds_used"], cleared_block=cleared)
+
+
+def command_reset(args):
+    config, root, plan, directory = open_review(args)
+    with locked(directory):
+        state = read_state(directory)
+        if state["closed"]:
+            raise HelperError("this review is closed", reason="closed")
+        before = {"bound": state["bound"], "effort": state["effort"]}
+        state["grants"].append({"type": "reset", "at": now(), "bound_before": state["bound"],
+                                "cleared_block": state.get("blocked") is not None})
+        state["window_start"] = state["rounds_used"]
+        state["bound"] = state["rounds_used"] + config["rounds_default"]
+        state["effort"] = config["effort_default"]
+        state["escalation"] = None
+        state["failures"] = 0
+        state["blocked"] = None
+        write_state(directory, state)
+        render_ledger(directory, state)
+    emit("ok", bound=state["bound"], rounds_used=state["rounds_used"], effort=state["effort"],
+         previous=before)
+
+
+def archive_summary(directory, state):
+    lines = ["## Codex plan review", "",
+             "- Plan: %s (key %s)" % (clean(state.get("plan", "")), state["plan_key"]),
+             "- Rounds used: %d of %d" % (state["rounds_used"], state["bound"])]
+    last_meaningful = None
+    for number in range(1, state["rounds_used"] + 1):
+        data = load_round(directory, number, state)
+        findings = data.get("result", {}).get("findings", [])
+        meaningful = [f for f in findings if f.get("severity") in MEANINGFUL and not f.get("suppressed")]
+        usage = data.get("usage") or {}
+        lines.append("- Round %d: model %s, effort %s, %d finding(s) (%d blocker or major), "
+                     "%s input and %s output tokens" % (
+                         number, clean(data.get("model")), clean(data.get("effort")), len(findings),
+                         len(meaningful), usage.get("input_tokens", "?"), usage.get("output_tokens", "?")))
+        last_meaningful = meaningful
+    if state["rounds_used"] == 0:
+        outcome = "no review round was run"
+    elif last_meaningful:
+        outcome = "not converged (%d blocker or major finding(s) in the last round)" % len(last_meaningful)
+    else:
+        outcome = "converged (no blocker or major finding in the last round)"
+    lines.append("- Outcome: %s" % outcome)
+    for item in state.get("escalations", []):
+        lines.append("- Effort raised to %s for round %s: %s" % (
+            clean(item.get("to")), item.get("round"), clean(item.get("reason"))))
+    for grant in state["grants"]:
+        lines.append("- Owner %s%s at %s" % (
+            grant.get("type"), " (+%s rounds)" % grant["rounds"] if grant.get("rounds") else "",
+            grant.get("at")))
+    decisions = state["decisions"]
+    applied = [k for k, v in decisions.items() if v["decision"] == "applied"]
+    rejected = [(k, v) for k, v in decisions.items() if v["decision"] == "rejected"]
+    lines.append("- Decisions: %d applied, %d rejected" % (len(applied), len(rejected)))
+    for key, value in sorted(rejected):
+        lines.append("  - %s [%s] rejected: %s — %s" % (
+            key, value.get("severity"), clean(value.get("problem", "")), clean(value.get("reason", ""))))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def command_archive(args):
+    config, root, plan, directory = open_review(args)
+    with locked(directory):
+        state = read_state(directory)
+        if not state["closed"]:
+            state["closed"] = now()
+            keys = [state["plan_key"], plan["key"]]
+            state["closed_keys"] = sorted(set(keys))
+            write_state(directory, state)
+            render_ledger(directory, state)
+        text = archive_summary(directory, state)
+    emit("ok", closed=state["closed"], rounds_used=state["rounds_used"], bound=state["bound"],
+         summary_markdown=text)
+
+
+EXPECTED_FILES = re.compile(r"^(state\.json|ledger\.md|\.lock|round-\d+\.json|round-\d+\.codex-output\.json|\.tmp-.*)$")
+
+
+def prune_candidates(root, config):
+    """Return (eligible, skipped) review directories under .debug/."""
+    eligible, skipped = [], []
+    debug = debug_directory(root)
+    if not debug.is_dir():
+        return eligible, skipped
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        days=config["prune_retention_days"])
+    for entry in sorted(debug.iterdir()):
+        if not STATE_DIR_RE.fullmatch(entry.name):
+            continue
+        label = ".debug/%s" % entry.name
+        if entry.is_symlink() or not entry.is_dir():
+            skipped.append({"directory": label, "reason": "not a plain directory (symlink or file)"})
+            continue
+        state = peek_state(entry)
+        if state is None or state.get("schema_version") != STATE_SCHEMA:
+            skipped.append({"directory": label, "reason": "unreadable or unrecognized state.json"})
+            continue
+        if not seal_matches(state):
+            skipped.append({"directory": label,
+                            "reason": "state seal does not verify; not deleting"})
+            continue
+        closed = state.get("closed")
+        if not closed:
+            skipped.append({"directory": label, "reason": "review is still open"})
+            continue
+        try:
+            closed_at = datetime.datetime.strptime(closed, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            skipped.append({"directory": label, "reason": "closed timestamp is not recognized"})
+            continue
+        if closed_at > cutoff:
+            skipped.append({"directory": label, "reason": "closed less than %d days ago"
+                            % config["prune_retention_days"]})
+            continue
+        extras = sorted(p.name for p in entry.iterdir() if not EXPECTED_FILES.match(p.name) or p.is_symlink())
+        if extras:
+            skipped.append({"directory": label,
+                            "reason": "unexpected content, not deleting: %s" % ", ".join(clean(x) for x in extras)})
+            continue
+        eligible.append({"directory": label, "path": entry, "closed": closed})
+    return eligible, skipped
+
+
+def command_prune(args):
+    config = load_config()
+    root = repo_root()
+    eligible, skipped = prune_candidates(root, config)
+    deleted = False
+    if args.confirm:
+        debug = debug_directory(root).resolve()
+        for item in eligible:
+            path = item["path"]
+            if path.is_symlink() or path.resolve().parent != debug:
+                raise HelperError("refusing to delete outside .debug/: %s" % clean(item["directory"]))
+            shutil.rmtree(str(path))
+        deleted = bool(eligible)
+    emit("ok", deleted=deleted, retention_days=config["prune_retention_days"],
+         eligible=[{"directory": i["directory"], "closed": i["closed"]} for i in eligible],
+         skipped=skipped,
+         next_action=None if args.confirm or not eligible
+         else "rerun the identical command with --confirm to delete the listed directories")
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        emit("error", error="usage: %s" % message, reason="usage")
+        sys.exit(2)
+
+
+def build_parser():
+    parser = Parser(prog="ask-codex", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
+
+    def add_plan(p):
+        p.add_argument("--plan", help="plan file (default: %s); relative paths are repository-relative" % DEFAULT_PLAN)
+
+    p = sub.add_parser("status", help="show review state")
+    add_plan(p)
+    p.set_defaults(func=command_status)
+    p = sub.add_parser("init", help="prepare review state (no Codex call)")
+    add_plan(p)
+    p.set_defaults(func=command_init)
+    p = sub.add_parser("models", help="list the models and efforts Codex offers")
+    p.set_defaults(func=command_models)
+    p = sub.add_parser("review-plan", help="run one bounded review round")
+    add_plan(p)
+    p.add_argument("--max-rounds", type=int, help="bound for this review; only when it starts")
+    p.add_argument("--model", help="model for this request only")
+    p.add_argument("--effort", help="effort for this request only (never above the ceiling)")
+    p.set_defaults(func=command_review_plan)
+    p = sub.add_parser("extend", help="grant 1-5 more rounds (owner approval)")
+    add_plan(p)
+    p.add_argument("rounds", type=int, help="rounds to add, 1 to %d" % HARD_ROUND_CEILING)
+    p.set_defaults(func=command_extend)
+    p = sub.add_parser("reset", help="open a fresh default window of rounds (owner approval)")
+    add_plan(p)
+    p.set_defaults(func=command_reset)
+    p = sub.add_parser("archive", help="summarize the review and close it")
+    add_plan(p)
+    p.set_defaults(func=command_archive)
+    p = sub.add_parser("prune", help="preview or delete closed reviews past retention")
+    p.add_argument("--confirm", action="store_true", help="delete the listed directories")
+    p.set_defaults(func=command_prune)
+    p = sub.add_parser("decide", help="record a decision on a finding")
+    add_plan(p)
+    p.add_argument("finding", help="finding id such as R1-F2")
+    p.add_argument("decision", choices=("applied", "rejected"))
+    p.add_argument("--reason", help="required for a rejection")
+    p.set_defaults(func=command_decide)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        args.func(args)
+    except Stop as exc:
+        emit("stopped", reason=exc.reason, message=clean(str(exc)), **exc.details)
+        return 1
+    except HelperError as exc:
+        payload = {"error": clean(str(exc)), "reason": exc.reason}
+        if exc.fix:
+            payload["fix"] = exc.fix
+        payload.update(exc.details)
+        emit("error", **payload)
+        return 2
+    except OSError as exc:
+        emit("error", error="I/O error: %s" % clean(exc), reason="io")
+        return 2
+    except Exception as exc:  # noqa: BLE001 - never end a command in a traceback
+        emit("error", error="internal error: %s: %s" % (exc.__class__.__name__, clean(exc)),
+             reason="internal")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

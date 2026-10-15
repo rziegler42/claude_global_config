@@ -11,6 +11,7 @@ agents/workflow-reviewer.md
 hooks/review_agent_guard.py
 bin/claude-workflow
 bin/remote-runner
+bin/ask-codex
 skills/architecture-decisions/SKILL.md
 skills/freecad-scripts/SKILL.md
 skills/freecad-scripts/references/assembly-and-3mf.md
@@ -36,3 +37,8 @@ skills/security-review/SKILL.md
 skills/verilog-sby-formal/SKILL.md
 skills/verilog-sby-formal/reference.md
 
+ask-codex/config.json
+ask-codex/kinds/plan-review/kind.json
+ask-codex/kinds/plan-review/prompt.md
+ask-codex/kinds/plan-review/schema.json
+skills/second-opinion/SKILL.md

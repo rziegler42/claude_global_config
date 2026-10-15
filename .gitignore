@@ -2,3 +2,5 @@
 *.pyc
 __pycache__/
 
+# Per-machine tamper-evidence key for ask-codex; never commit.
+/ask-codex/.seal-key

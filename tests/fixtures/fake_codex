@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""A fake `codex` for tests of bin/ask-codex. Never talks to a network.
+
+scenario.json beside this script holds {"responses": [...]}. The Nth call
+uses responses[N] (the last response repeats). Each call is recorded to
+call-N.json beside it: argv, the full environment, stdin, cwd.
+
+Response modes:
+  ok     {"result": {...}|"raw text", "usage": {...}}   writes the -o file
+  error  {"stderr": "...", "exit": 1}                    writes stderr, exits
+  hang   {}                                              sleeps; spawns a child
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+directory = os.path.dirname(os.path.abspath(__file__))
+scenario_path = os.path.join(directory, "scenario.json")
+counter_path = os.path.join(directory, "counter")
+count = int(open(counter_path).read()) if os.path.exists(counter_path) else 0
+with open(counter_path, "w") as handle:
+    handle.write(str(count + 1))
+scenario = json.load(open(scenario_path))
+responses = scenario["responses"]
+response = responses[min(count, len(responses) - 1)]
+
+stdin = sys.stdin.read()
+args = sys.argv[1:]
+with open(os.path.join(directory, "call-%d.json" % count), "w") as handle:
+    json.dump({"argv0": sys.argv[0], "argv": args, "env": dict(os.environ), "stdin": stdin, "cwd": os.getcwd()}, handle)
+
+mode = response.get("mode", "ok")
+if mode == "ok":
+    out = args[args.index("-o") + 1]
+    result = response["result"]
+    with open(out, "w") as handle:
+        handle.write(result if isinstance(result, str) else json.dumps(result))
+    usage = response.get("usage", {"input_tokens": 1000, "cached_input_tokens": 0,
+                                   "output_tokens": 50, "reasoning_output_tokens": 10})
+    print(json.dumps({"type": "thread.started"}))
+    print(json.dumps({"type": "turn.completed", "usage": usage}))
+    sys.exit(0)
+if mode == "error":
+    sys.stderr.write(response.get("stderr", ""))
+    sys.exit(response.get("exit", 1))
+if mode == "hang":
+    child = subprocess.Popen(["sleep", "60"])
+    with open(os.path.join(directory, "child.pid"), "w") as handle:
+        handle.write(str(child.pid))
+    time.sleep(60)
+    sys.exit(0)
+if mode == "ok_detached":
+    out = args[args.index("-o") + 1]
+    with open(out, "w") as handle:
+        handle.write(json.dumps(response["result"]))
+    subprocess.Popen(["sleep", "30"], start_new_session=True)
+    print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))
+    sys.stdout.flush()
+    sys.exit(0)
+if mode == "hang_detached":
+    subprocess.Popen(["sleep", "30"], start_new_session=True)
+    time.sleep(60)
+    sys.exit(0)
+sys.exit(3)
