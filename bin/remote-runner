@@ -359,8 +359,11 @@ def read_worktree_entry(root_fd: int, path: bytes, limit: int, tracked: bytes | 
                 fail(f"snapshot refused: {show_path(path)} is {info.st_size} bytes; "
                      f"snapshot size limit of {limit} bytes exceeded")
             return ("same:" + kind, b"")
-        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             dir_fd=directory)
+        try:
+            descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 dir_fd=directory)
+        except OSError:
+            fail(f"snapshot refused: {show_path(path)} changed while it was being read")
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             if not stat.S_ISREG(opened.st_mode):
@@ -675,6 +678,18 @@ def recommend_remote(requirements: dict[str, object]) -> tuple[str | None, dict[
 
 def submit_snapshot(args: argparse.Namespace, repo: Path) -> None:
     """Send a snapshot of the working tree to a runner as a bundle over SSH."""
+    # SIGTERM must unwind the context managers, or the temporary snapshot
+    # repository (which holds uncommitted file contents) would be left behind.
+    def terminate(signum: int, frame: object) -> None:
+        raise SystemExit(128 + signum)
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        _submit_snapshot(args, repo)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _submit_snapshot(args: argparse.Namespace, repo: Path) -> None:
     with snapshot(repo) as snap:
         project, profiles, requirements = project_config(repo, revision=snap.commit,
                                                          git_dir=snap.git_dir)
@@ -1000,13 +1015,17 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
                         ["git", "--git-dir", str(bare), "worktree", "remove", "--force", worktree],
                         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
-            if isinstance(cache, str) and JOB_ID.fullmatch(job):
-                bare = projects_root / cache / "repo.git"
-                if bare.is_dir():
-                    subprocess.run(
-                        ["git", "--git-dir", str(bare), "update-ref", "-d", f"refs/snapshots/{job}"],
-                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+            if JOB_ID.fullmatch(job):
+                # The job record names its cache but a job can rewrite it, so the
+                # snapshot ref (named from the runner-created directory) is
+                # removed from every cache.
+                for bare in sorted(projects_root.glob("*/repo.git")):
+                    if bare.is_dir() and not bare.is_symlink():
+                        subprocess.run(
+                            ["git", "--git-dir", str(bare), "update-ref", "-d",
+                             f"refs/snapshots/{job}"],
+                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
             try:
                 if job_dir.parent == jobs_root and job_dir.is_dir() and not job_dir.is_symlink():
                     shutil.rmtree(job_dir)
@@ -1051,6 +1070,10 @@ def worker(args: argparse.Namespace) -> None:
         source_url = unb64(args.source_url)
         source_ref = unb64(args.source_ref) if args.source_ref else None
         command = unb64(args.command)
+        if source_ref is not None and not SOURCE_REF.fullmatch(source_ref):
+            fail("source ref must be refs/heads/... or refs/tags/...")
+        if not snapshot_mode and not (args.commit and HEX40.fullmatch(args.commit)):
+            fail("commit must be a 40-character object ID")
         if not PROJECT_ID.fullmatch(project):
             fail("project ID contains unsupported characters")
         if not valid_source_url(source_url):
@@ -1101,7 +1124,7 @@ def worker(args: argparse.Namespace) -> None:
                 run([
                     "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
                     "-c", "protocol.ssh.allow=always", "-C", str(bare),
-                    "fetch", "--prune", "origin", source_ref or wanted,
+                    "fetch", "--prune", "origin", "--", source_ref or wanted,
                 ], capture=True)
                 run(["git", "-C", str(bare), "cat-file", "-e", f"{wanted}^{{commit}}"], capture=True)
             except subprocess.CalledProcessError:
@@ -1117,6 +1140,7 @@ def worker(args: argparse.Namespace) -> None:
                          f"refs/snapshot/head:refs/snapshots/{args.job}"], capture=True)
                 except subprocess.CalledProcessError:
                     fail("snapshot bundle failed verification")
+                bundle_file.unlink(missing_ok=True)  # the objects now live in the cache
                 if git_value(bare, "rev-parse", f"refs/snapshots/{args.job}") != args.commit:
                     fail("snapshot commit does not match the declared commit")
                 lineage = git_value(bare, "rev-list", "--parents", "-n", "1", args.commit).split()

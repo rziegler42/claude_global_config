@@ -180,7 +180,7 @@ class EndToEnd(Fixture):
                                           "--profile", "quick"))
         self.wait(data["job"])
         job_dir = self.ws / "jobs" / data["job"]
-        self.assertTrue((job_dir / "snapshot.bundle").is_file())
+        self.assertFalse((job_dir / "snapshot.bundle").exists())
         bare = next((self.ws / "projects").glob("*/repo.git"))
         ref = f"refs/snapshots/{data['job']}"
         self.assertIn(ref, git(bare, "for-each-ref", "--format=%(refname)"))
@@ -188,6 +188,70 @@ class EndToEnd(Fixture):
         self.assertFalse(job_dir.exists())
         self.assertNotIn(ref, git(bare, "for-each-ref", "--format=%(refname)"))
         self.assertNotIn(str(job_dir), git(bare, "worktree", "list"))
+
+
+class ReviewFindings(Fixture):
+    def finished_job(self):
+        data = json.loads(self.controller("submit", "--snapshot", "--remote", "r1",
+                                          "--profile", "quick"))
+        self.wait(data["job"])
+        return data["job"]
+
+    def test_bundle_is_deleted_after_the_verified_fetch(self):
+        job = self.finished_job()
+        self.assertFalse((self.ws / "jobs" / job / "snapshot.bundle").exists())
+
+    def test_prune_removes_the_ref_even_when_the_record_names_another_cache(self):
+        job = self.finished_job()
+        bare = next((self.ws / "projects").glob("*/repo.git"))
+        record = self.ws / "jobs" / job / "metadata.json"
+        data = json.loads(record.read_text())
+        data["cache"] = "somewhere-else"
+        record.write_text(json.dumps(data))
+        self.controller("prune", "--remote", "r1", "--success-days", "0", "--apply")
+        self.assertNotIn(f"refs/snapshots/{job}", git(bare, "for-each-ref", "--format=%(refname)"))
+
+    def test_prune_removes_the_ref_of_a_job_with_a_minimal_record(self):
+        job = self.finished_job()
+        bare = next((self.ws / "projects").glob("*/repo.git"))
+        record = self.ws / "jobs" / job / "metadata.json"
+        record.write_text(json.dumps({"job": job, "project": "snapdemo", "state": "FAILED",
+                                      "created_at": 1.0}))
+        self.controller("prune", "--remote", "r1", "--success-days", "0", "--failure-days", "0",
+                        "--apply")
+        self.assertNotIn(f"refs/snapshots/{job}", git(bare, "for-each-ref", "--format=%(refname)"))
+
+    def test_hostile_source_ref_is_refused_by_the_worker(self):
+        marker = self.base_dir / "MARK"
+        commit, base, data, size, digest = self.bundle()
+        args = self.submit_args("src-1", commit, base, size, digest,
+                                **{"--source-ref": b64(f"--upload-pack=touch {marker}")})
+        with self.assertRaises(SystemExit):
+            self.worker(*args, stdin=data)
+        self.assertFalse(marker.exists())
+        self.assertFalse((self.ws / "jobs" / "src-1").exists())
+
+    def test_terminated_submit_leaves_no_temporary_copies(self):
+        scratch = self.base_dir / "tmp"
+        scratch.mkdir()
+        code = (
+            "import importlib.machinery as m, importlib.util as u, sys, time, os\n"
+            "l=m.SourceFileLoader('rr', sys.argv[1]); s=u.spec_from_loader('rr', l)\n"
+            "rr=u.module_from_spec(s); l.exec_module(rr)\n"
+            "rr.load_remotes=lambda: {'r1': {'ssh_host':'h','workspace_root':'/x','max_jobs':1}}\n"
+            "def slow(*a, **k):\n"
+            "    print('READY', flush=True); time.sleep(60)\n"
+            "rr.invoke_worker=slow\n"
+            "args=rr.parser().parse_args(['submit','--snapshot','--remote','r1','--profile','quick'])\n"
+            "rr.controller(args)\n")
+        env = {**os.environ, "TMPDIR": str(scratch)}
+        process = subprocess.Popen([sys.executable, "-I", "-c", code, str(BIN / "remote-runner")],
+                                   cwd=self.repo, env=env, stdout=subprocess.PIPE, text=True)
+        self.assertEqual(process.stdout.readline().strip(), "READY")
+        self.assertTrue(list(scratch.glob("remote-runner-*")))
+        process.terminate()
+        process.wait(timeout=20)
+        self.assertEqual(list(scratch.glob("remote-runner-*")), [])
 
 
 class Bootstrap(unittest.TestCase):

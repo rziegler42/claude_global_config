@@ -462,6 +462,10 @@ untracked files, honors `.gitignore`, and skips nested repositories.
   `*.p12`, `.aws/credentials`, and similar), any file containing a private key,
   more than 5000 changed files, more than 64 MiB changed, an unresolved merge,
   or a path that passes through a symlinked directory.
+- The scan is best-effort name and PEM-marker matching. It does not recognize
+  names such as `.envrc`, `.npmrc`, `service-account.json`, or `.docker/config.json`,
+  encoded or UTF-16 keys, or token strings; keep such files out of the working
+  tree or ignored.
 - The job runs the snapshot's own `.claude/remote-runner.toml`, so an
   uncommitted profile change runs on the runner. The runner is trusted with
   whatever the working tree contains that the scan does not recognize.

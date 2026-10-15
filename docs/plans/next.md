@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment E complete)
+Status: In Progress (Increment F complete)
 Created: 2026-10-15
 
 ## Goal
@@ -340,3 +340,27 @@ test uncommitted work; WIP branch retained as an owner-requested alternative),
 and ADR 0002 with its index row. `~/.claude/CLAUDE.md` is **not** changed: the
 owner reviews the tracked wording first, and the installed copy is updated with
 the Increment G install. `test_install.py` passes (75 OK, 5 skipped).
+
+### Increment F (2026-10-15): complete
+
+Independent adversarial `security-reviewer` pass (scratch experiments with
+hostile git config, filters, hooks, path names, crafted bundles, a directory
+swap race, BOOTSTRAP lengths, prune with rewritten records). No Critical or
+High findings. Repository-configured programs never ran; hostile trees
+(`.git` variants, `.gitmodules`, case collisions) were rejected by the worker's
+fsck-enabled fetch or the clean-checkout check; no out-of-tree read occurred in
+20000 race iterations.
+
+Fixed with regression tests (`tests/test_remote_runner_snapshot*.py`, 72 remote
+runner tests OK): prune leaked `refs/snapshots/<job>` when a job rewrote its
+`cache` field (now removed from every cache by directory name); the bundle was
+retained (deleted after the verified fetch); SIGTERM left temporary snapshot
+copies (handler unwinds the context managers); `--source-ref` was unvalidated
+and not `--`-separated, and a plain-submit `--commit` was unvalidated (both now
+validated); a swap race gave a traceback (now a clean refusal).
+
+Accepted: the secret scan is best-effort (documented in the README); a hardlink
+to an outside plain file is included; the rest of the trust model matches
+ADR 0002. Not tested: a Linux runner with git older than 2.24 (fsck on fetch is
+the protection that was exercised, on macOS git only; Increment G runs a real
+job on `ned`).

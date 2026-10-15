@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 
@@ -312,6 +313,17 @@ class Refusals(SnapshotCase):
         (self.repo / "run.sh").chmod(0o644)
         with RR.snapshot(self.repo) as snap:
             self.assertEqual(snap.changed, {})
+
+    def test_a_file_swapped_for_a_symlink_is_refused_cleanly(self):
+        real_open = os.open
+
+        def swapped(path, flags, *args, **kwargs):
+            if path == b"tracked.txt" and flags & os.O_NOFOLLOW and not flags & os.O_DIRECTORY:
+                raise OSError(40, "Too many levels of symbolic links")
+            return real_open(path, flags, *args, **kwargs)
+        self.write("tracked.txt", "two\n")
+        with unittest.mock.patch.object(RR.os, "open", swapped):
+            self.refused("tracked.txt")
 
     def test_nested_repository_is_not_followed(self):
         nested = self.repo / "vendor" / "lib"
