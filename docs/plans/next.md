@@ -1,6 +1,6 @@
 # Next plan
 
-Status: In Progress (Increment A)
+Status: In Progress (Increment B complete, uncommitted)
 Created: 2026-10-15
 
 ## Goal
@@ -225,7 +225,7 @@ Completion: completion criteria met.
 
 <!-- Complete after verification; archive per docs/plans/README.md. -->
 
-### Increment A (2026-10-15): complete, not yet committed
+### Increment A (2026-10-15): complete, committed as `b388ec5`
 
 Scope reviewed: `bin/remote-runner`, `bin/claude-workflow`,
 `skills/graphify-workflow/scripts/`, `hooks/review_agent_guard.py`, and
@@ -257,3 +257,29 @@ is allowed in reviewer mode.
 Not yet done: Increments B–G. Nothing from Increment A is installed to
 `~/.claude`; install only after the reviewed dry-run in Increment G (or earlier
 on request).
+
+### Increment B (2026-10-15): complete, not yet committed
+
+`settings.json` and new `tests/test_permissions.py` (16 tests; full suite 405
+OK, 5 skipped). `allow` gains read-only git (`ls-files`, `blame`, `describe`,
+`remote -v`, `for-each-ref`, `worktree list`, `branch --list`), `git add`,
+`git mv`, and `remote-runner remotes|recommend|status|log|artifacts`;
+`claude-workflow commit` leaves `allow`. `ask` gains `claude-workflow
+commit|amend-message|remove` and `remote-runner submit|cancel|prune` in the five
+helper spellings, plus `git commit|push|tag|switch|stash`, branch deletion,
+`gh`, `ssh`, `scp`, `rsync`, and package installs. `deny` gains `Read` of
+`**/.env`, `**/.env.*`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/**`,
+`~/.codex/auth.json`, and `rmdir`, `unlink`, `shred`.
+
+Deviation from the plan: precedence is deny > ask > allow, so an `ask` rule on
+`git tag` or `git stash` would shadow an allow of `tag --list` or `stash list`.
+Both are ask-only and `git for-each-ref` replaces `tag --list`; a test rejects
+any allow rule shadowed by an ask or deny rule.
+
+Not probed: the new wildcard forms cannot be exercised until the rules are
+installed, because the live engine reads `~/.claude/settings.json`. The probe
+moves to Increment G (harmless no-ops: `git push --dry-run`, `git commit
+--dry-run`, `remote-runner prune`, `Read` of a scratch `.env`). Residual: rules
+are literal prefixes, so spellings such as `git -C <dir> commit` or a relative
+`python3 bin/claude-workflow commit` are not matched and fall to the
+auto-mode classifier.
