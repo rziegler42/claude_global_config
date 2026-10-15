@@ -1,0 +1,19 @@
+# How install.py treats keys in settings.json. One rule per line:
+#
+#   preference <json-pointer>   seed from settings.json only when the key is
+#                               absent locally; a local value is never
+#                               overwritten and never reported as drift
+#   open <json-pointer>         an object whose repository entries are
+#                               enforced; extra local entries are allowed
+#
+# Every key not listed here is strict: the repository value is enforced, lists
+# are repository-owned in full, and an unexpected local key fails --check.
+# Paths use JSON Pointer syntax ("/" separates levels, "~1" is "/", "~0" is "~").
+
+preference /advisorModel
+preference /theme
+preference /agentPushNotifEnabled
+preference /model
+preference /modelSettings
+
+open /enabledPlugins

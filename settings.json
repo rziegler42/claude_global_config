@@ -51,9 +51,7 @@
     "defaultMode": "auto"
   },
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "design@synced": false,
-    "pdf-viewer@synced": false
+    "superpowers@claude-plugins-official": true
   },
   "advisorModel": "opus",
   "theme": "dark",

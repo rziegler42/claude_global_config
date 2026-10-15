@@ -11,7 +11,10 @@ downloads, synced skills, or other generated and machine-specific state.
 ## Contents
 
 - `CLAUDE.md` — global engineering and safety policy.
-- `settings.json` — permissions and enabled-plugin preferences.
+- `settings.json` — permissions, required plugins, and seed preferences,
+  installed under the rules in `settings-policy.txt`.
+- `settings-policy.txt` — which `settings.json` keys are local preferences or
+  open maps; everything else is strict (see Settings policy and file modes).
 - `agents/` — focused implementer, read-only reviewer, adversarial
   security-reviewer, researcher, committer, and Graphify semantic agents.
 - `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
@@ -23,8 +26,8 @@ downloads, synced skills, or other generated and machine-specific state.
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
 - `config-manifest.txt` — the complete allowlist installed into `~/.claude`.
-- `install.sh` — an idempotent installer with dry-run, drift-check, and backup
-  support.
+- `install.py` — an idempotent installer with dry-run, drift-check, backup, and
+  settings-policy support (Python 3.9+, standard library only).
 
 ## Prerequisites
 
@@ -43,28 +46,69 @@ projects may require additional language toolchains.
 Clone the repository, review the files, and run:
 
 ```sh
-./install.sh --dry-run
-./install.sh
-./install.sh --check
+./install.py --dry-run
+./install.py
+./install.py --check
 ```
 
 The installer copies only paths listed in `config-manifest.txt`. Before
 replacing a differing destination file, it saves the old version under
-`~/.claude/backups/claude-global-config-<UTC timestamp>/`. It never deletes
-unmanaged files. The two helper commands are linked into `~/.local/bin`; use
-`--no-link-bin` to skip those links. Ensure `~/.local/bin` is on `PATH`.
+`~/.claude/backups/claude-global-config-<UTC timestamp>/` (created `0700`; a
+suffix is added if the name already exists). It never deletes unmanaged files.
+The two helper commands are linked into `~/.local/bin`; use `--no-link-bin` to
+skip those links. Ensure `~/.local/bin` is on `PATH`.
+
+The installer validates the manifest, every source, and `settings.json` before
+writing anything. It refuses manifest entries that are absolute, contain `..`
+or non-canonical segments, repeat a path (case-insensitively), or spell
+`settings.json` differently; it refuses symlinked sources or sources outside
+the repository; and it refuses destinations that leave the configuration
+directory or alias `settings.json`.
 
 Set `CLAUDE_CONFIG_DIR` or `LOCAL_BIN_DIR` to test or install in alternate
 locations:
 
 ```sh
 test_root=$(mktemp -d)
-CLAUDE_CONFIG_DIR="$test_root/.claude" LOCAL_BIN_DIR="$test_root/bin" ./install.sh
+CLAUDE_CONFIG_DIR="$test_root/.claude" LOCAL_BIN_DIR="$test_root/bin" ./install.py
 ```
+
+## Settings policy and file modes
+
+A byte-for-byte copy of `settings.json` would erase local preferences and flag
+harmless local additions as drift, so the installer manages it by policy.
+`settings-policy.txt` classifies keys with JSON Pointer paths:
+
+| Category | Behaviour |
+|---|---|
+| `preference` | Seeded from the repository only when absent locally; a local value is never overwritten and never reported. Use for `model`, `theme`, and similar. |
+| `open` | An object whose repository entries are enforced while extra local entries are allowed. Used for `/enabledPlugins`. |
+| strict (default) | The repository value is enforced; lists are owned in full; a local-only key fails `--check` as `UNEXPECTED` and is dropped by an install (the previous file is backed up). |
+
+Security-relevant keys (`permissions`, `hooks`, `env`, `apiKeyHelper`,
+`statusLine`, MCP and marketplace settings, and similar) cannot be declared
+`preference` or `open`; the installer rejects such a policy. A key removed from
+the repository remains in the installed file until you remove it.
+
+Required plugins (enabled `true` in `settings.json`) must also be installed:
+`--check` prints `MISSING-PLUGIN <name>` and fails when the Claude Code plugin
+registry lacks one, and warns `UNKNOWN plugin state` when the registry cannot
+be read. The installer never installs plugins.
+
+`--check` and `--dry-run` also report file modes as `MODE <path> <actual>
+(expected <wanted>)`, and an install fixes them. The rules only tighten:
+`settings.json` has no group or other access (fresh installs are `0600`), files
+whose repository source is executable keep the owner execute bit, and no managed
+file is group- or world-writable. A mode is never loosened.
+
+Differences are printed under their file, for example `differs
+/permissions/allow` with `+` (local only) and `-` (repository) entries,
+`missing <path>`, or `UNEXPECTED <path>`. Control characters in local data are
+escaped in all output.
 
 ## Updating an installed configuration
 
-Re-run `install.sh` whenever the tracked repository changes. The installer is
+Re-run `install.py` whenever the tracked repository changes. The installer is
 idempotent: it skips matching files, installs changed files, and backs up every
 differing destination before replacement. A separate `--update` option is not
 needed.
@@ -73,22 +117,24 @@ Before pulling, check from the repository root whether the working `~/.claude`
 files have local changes that have not been mirrored:
 
 ```sh
-./install.sh --check
+./install.py --check
 ```
 
-A zero exit status means every managed working file matches the repository. A
-nonzero result prints each differing path as `DIFF <path>`. Review and preserve
-intentional live-only edits before continuing; otherwise a later install will
-replace them, although the previous versions will be backed up.
+A zero exit status means every managed working file matches the repository
+(allowing the local preferences and extra plugins the settings policy permits).
+A nonzero result prints each differing path as `DIFF <path>` with details, plus
+any `MODE` or `MISSING-PLUGIN` lines. Review and preserve intentional live-only
+edits before continuing; otherwise a later install will replace them, although
+the previous versions will be backed up.
 
 For a normal repository-first update, run from the repository root:
 
 ```sh
-./install.sh --check
+./install.py --check
 git pull --ff-only
-./install.sh --dry-run
-./install.sh
-./install.sh --check
+./install.py --dry-run
+./install.py
+./install.py --check
 ```
 
 Review the dry-run output before installation. The final check should print
@@ -98,7 +144,7 @@ updated policy, agent, skill, setting, or plugin needs a new session to load.
 When a working file under `~/.claude` was intentionally edited first, do not
 blindly run the installer. Copy the portable change into the corresponding file
 in this repository, review it, run the relevant validation, and commit it. Then
-run `./install.sh --check` to confirm both copies match.
+run `./install.py --check` to confirm both copies match.
 
 The manifest is an installation allowlist, not a deletion list. Removing a path
 from `config-manifest.txt` stops future installations but does not remove the
@@ -115,10 +161,10 @@ temporary destination first:
 test_root=$(mktemp -d)
 CLAUDE_CONFIG_DIR="$test_root/.claude" \
 LOCAL_BIN_DIR="$test_root/bin" \
-./install.sh
+./install.py
 CLAUDE_CONFIG_DIR="$test_root/.claude" \
 LOCAL_BIN_DIR="$test_root/bin" \
-./install.sh --check
+./install.py --check
 ```
 
 ## Agent guard hook
@@ -395,8 +441,8 @@ change:
    file.
 2. Add new portable paths to `config-manifest.txt`.
 3. Run the relevant helper syntax checks and `git diff --check`.
-4. Use `./install.sh --dry-run`, install the reviewed change, and finish with
-   `./install.sh --check`.
+4. Use `./install.py --dry-run`, install the reviewed change, and finish with
+   `./install.py --check`.
 5. Review and commit from this repository; never copy runtime state wholesale.
 
 The default source for new projects is the separate tracked
