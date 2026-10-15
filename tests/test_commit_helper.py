@@ -52,11 +52,11 @@ class CommitHelper(unittest.TestCase):
 
     def test_body_and_trailers_are_recorded_exactly(self):
         r = self.commit("--subject", "Update a", "--body", "First line.\nSecond line.",
-                        "--trailer", "Co-Authored-By: Claude <noreply@example.com>",
+                        "--trailer", "Co-Authored-By: Pat <pat@example.com>",
                         "--trailer", "Reviewed-by: Someone <s@example.com>")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.message(), "Update a\n\nFirst line.\nSecond line.\n\n"
-                         "Co-Authored-By: Claude <noreply@example.com>\n"
+                         "Co-Authored-By: Pat <pat@example.com>\n"
                          "Reviewed-by: Someone <s@example.com>")
         self.assertEqual(self.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"), "a.txt")
 

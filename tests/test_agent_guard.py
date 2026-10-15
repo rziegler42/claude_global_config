@@ -18,7 +18,8 @@ GUARD = Path(os.environ.get("GUARD", Path(__file__).resolve().parents[1] / "hook
 
 
 def run(mode, tool, cwd, **tool_input):
-    payload = {"tool_name": tool, "tool_input": tool_input, "cwd": str(cwd)}
+    payload = {"tool_name": tool, "tool_input": tool_input, "cwd": str(cwd),
+               "session_id": "s%d" % os.getpid()}
     return subprocess.run([sys.executable, "-B", str(GUARD), mode], input=json.dumps(payload),
                           capture_output=True, text=True)
 

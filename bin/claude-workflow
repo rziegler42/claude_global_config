@@ -26,8 +26,63 @@ def emit(status, **details):
     print(json.dumps({"status": status, **details}, ensure_ascii=False))
 
 
-def run(argv, cwd, check=True):
-    result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+def is_inside(path, boundary):
+    """True when `path` is `boundary` or below it, robust to symlinks and case."""
+    try:
+        current = os.path.realpath(path)
+        while True:
+            if os.path.samefile(current, boundary):
+                return True
+            parent = os.path.dirname(current)
+            if parent == current:
+                return False
+            current = parent
+    except OSError:
+        return False
+
+
+def repository_boundary(start):
+    """The nearest ancestor of `start` holding a .git entry (without running git)."""
+    current = os.path.realpath(start)
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return os.path.realpath(start)
+        current = parent
+
+
+def trusted_path_entries(boundary):
+    """PATH entries that are absolute and outside the repository (never "", ".", or relative)."""
+    entries = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry and os.path.isabs(entry) and not is_inside(entry, boundary):
+            entries.append(entry)
+    return entries
+
+
+def trusted_which(name, boundary):
+    for entry in trusted_path_entries(boundary):
+        candidate = os.path.join(entry, name)
+        if (os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+                and not is_inside(candidate, boundary)):
+            return candidate
+    return None
+
+
+def run(argv, cwd, check=True, input_text=None, timeout=None):
+    boundary = repository_boundary(cwd)
+    env = dict(os.environ)
+    entries = trusted_path_entries(boundary) or ["/usr/bin", "/bin"]
+    env["PATH"] = os.pathsep.join(entries)
+    if argv and argv[0] == "git":
+        found = trusted_which("git", boundary)
+        if found is None:
+            raise RuntimeError("git was not found in an absolute PATH entry outside the repository")
+        argv = [found, *argv[1:]]
+    result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False, env=env,
+                            input=input_text, timeout=timeout)
     if check and result.returncode:
         detail = (result.stderr or result.stdout or "command failed").strip()[-1000:]
         raise RuntimeError(f"{argv[0]} failed ({result.returncode}): {detail}")
@@ -35,8 +90,31 @@ def run(argv, cwd, check=True):
 
 
 def git_root(path):
+    path = Path(path).resolve()
     result = run(["git", "rev-parse", "--show-toplevel"], path)
-    return Path(result.stdout.strip()).resolve()
+    top = Path(result.stdout.strip()).resolve()
+    holder = Path(repository_boundary(path))
+    try:
+        same = os.path.samefile(top, holder)
+    except OSError:
+        same = False
+    if not same:
+        raise RuntimeError(
+            "git reports a work tree that is not the repository holding its metadata "
+            "(a core.worktree redirect?); refusing to act")
+    marker = top / ".git"
+    if marker.is_dir():
+        gitdir = run(["git", "rev-parse", "--absolute-git-dir"], path).stdout.strip()
+        if os.path.realpath(gitdir) != os.path.realpath(marker):
+            raise RuntimeError("git is using a git directory that is not the repository's own .git "
+                               "(an embedded or bare repository?); refusing to act")
+    try:
+        path.relative_to(top)
+    except ValueError as exc:
+        raise RuntimeError(
+            "the working directory is outside the repository root git reports "
+            "(a core.worktree redirect?); refusing to act") from exc
+    return top
 
 
 def head(root):
@@ -61,19 +139,46 @@ def validate_subject(value):
 
 
 TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S[^\r\n\0]*$")
+ATTRIBUTION = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"co-?authored-?by\s*:[^\n]*(claude|anthropic)",
+    r"\b(assisted|generated|created|written|authored|reviewed|helped|made)[- ](with|by)\s+(?:the\s+|an?\s+)?(?:ai\s+)?(claude|anthropic)\b",
+    r"(assisted|generated|created|written|authored|reviewed|helped)-?(with|by)\s*:[^\n]*(claude|anthropic)",
+    r"noreply@anthropic\.com",
+    r"(?<![A-Za-z0-9-])(?:www\.)?claude\.(ai|com)/(code|chat|share|claude-code|new|resume|login)\b",
+))
+CONFUSABLES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c", "\u0445": "x",
+    "\u0443": "y", "\u0455": "s", "\u0456": "i", "\u0458": "j", "\u03bf": "o", "\u03b1": "a",
+})
+
+
+def refuse_attribution(text):
+    import unicodedata
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
+    normalized = normalized.translate(CONFUSABLES)
+    normalized = re.sub(r"\n[ \t]+", " ", normalized)  # folded continuation lines
+    normalized = re.sub(r"\s*:\s*\n\s*", ": ", normalized)
+    for pattern in ATTRIBUTION:
+        if pattern.search(normalized):
+            raise ValueError("commit messages must not carry AI attribution, session links, "
+                             "or Co-Authored-By lines for the assistant")
 
 
 def message_paragraphs(subject_line, body, trailers):
     """Validate the optional body and trailers and return the commit message paragraphs."""
     validate_subject(subject_line)
+    refuse_attribution(subject_line)
     paragraphs = [subject_line]
     if body is not None:
         if not body.strip() or "\0" in body or "\r" in body:
             raise ValueError("body must be non-empty text without NUL or carriage returns")
+        refuse_attribution(body)
         paragraphs.append(body.strip("\n"))
     for trailer in trailers or []:
         if not TRAILER.match(trailer):
             raise ValueError(f"trailer must be one 'Key: value' line: {trailer!r}")
+        refuse_attribution(trailer)
     if trailers:
         paragraphs.append("\n".join(trailers))
     return paragraphs
@@ -92,7 +197,8 @@ def validate_paths(root, paths):
         raise ValueError("at least one exact path is required")
     validated = []
     for raw in paths:
-        if raw in {".", ".."} or Path(raw).is_absolute() or any(c in raw for c in "*?[]"):
+        if (raw in {".", ".."} or Path(raw).is_absolute() or any(c in raw for c in "*?[]")
+                or raw.startswith((":", "-"))):
             raise ValueError(f"unsafe or non-exact path: {raw}")
         resolved = (root / raw).resolve()
         try:
@@ -154,6 +260,40 @@ def names_git_component(relative):
     return any(part.casefold() == ".git" for part in relative.parts)
 
 
+def looks_like_git_dir(path):
+    """A bare repository or separate git directory: HEAD, objects/, and refs/."""
+    path = Path(path)
+    try:
+        return (path / "HEAD").is_file() and (path / "objects").is_dir() and (path / "refs").is_dir()
+    except OSError:
+        return False
+
+
+def find_nested_git(directory):
+    """Repository metadata at or below `directory`: a `.git` entry (directory, gitlink
+    file, or symlink) in any case, or a bare or separate git directory."""
+    if looks_like_git_dir(directory):
+        return Path(directory)
+    for current, dirs, files in os.walk(directory, followlinks=False):
+        for name in dirs + files:
+            if name.casefold() == ".git":
+                return Path(current) / name
+        for name in dirs:
+            if looks_like_git_dir(Path(current) / name):
+                return Path(current) / name
+    return None
+
+
+def enclosing_repository(root, target):
+    """A nested repository that contains `target`, or None."""
+    current = Path(target).parent
+    while current != root and root in current.parents:
+        if os.path.lexists(current / ".git") or looks_like_git_dir(current):
+            return current
+        current = current.parent
+    return None
+
+
 def removal_targets(root, paths, recursive):
     if not paths:
         raise ValueError("at least one exact project-relative path is required")
@@ -211,6 +351,16 @@ def removal_targets(root, paths, recursive):
             kind = "directory" if target.is_dir() else "file"
             if kind == "directory" and not recursive:
                 raise ValueError(f"directory removal requires --recursive: {normalized}")
+            if kind == "directory":
+                nested = find_nested_git(target)
+                if nested is not None:
+                    raise ValueError(
+                        "refusing to remove a directory that contains a nested Git repository "
+                        f"or worktree: {nested.relative_to(root).as_posix()}")
+        enclosing = enclosing_repository(root, target)
+        if enclosing is not None:
+            raise ValueError("refusing to remove a path inside a nested Git repository: "
+                             f"{enclosing.relative_to(root).as_posix()}")
         targets.append((normalized, target, kind))
         selected.append(normalized)
     return targets
@@ -245,7 +395,9 @@ def graph_script(name):
 
 def changed_paths(root, base):
     """Return paths changed between base and HEAD, or None when base cannot be resolved."""
-    result = run(["git", "diff", "--name-only", "-z", base, "HEAD"], root, check=False)
+    if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
+        return None
+    result = run(["git", "diff", "--name-only", "-z", base, "HEAD", "--"], root, check=False)
     return {item for item in result.stdout.split("\0") if item} if result.returncode == 0 else None
 
 
@@ -276,9 +428,8 @@ def graph_ignored_paths(root, paths):
     if not paths:
         return set()
     try:
-        result = subprocess.run(
-            [sys.executable, str(graph_script("ignored_paths.py")), str(root)],
-            input=json.dumps(sorted(paths)), text=True, capture_output=True, check=False, timeout=60)
+        result = run([sys.executable, str(graph_script("ignored_paths.py")), str(root)], root,
+                     check=False, input_text=json.dumps(sorted(paths)), timeout=60)
         if result.returncode != 0:
             return set()
         listed = json.loads(result.stdout.strip().splitlines()[-1])
@@ -288,6 +439,7 @@ def graph_ignored_paths(root, paths):
 
 
 def graph_status_details(root):
+    require_graph_output(root)
     graph = root / "graphify-out" / "graph.json"
     if not graph.is_file():
         return {"status": "missing", "graph": str(graph)}
@@ -295,7 +447,7 @@ def graph_status_details(root):
     if refresh.is_file():
         try:
             state = json.loads(refresh.read_text(encoding="utf-8"))
-            if state.get("status") == "prepared":
+            if isinstance(state, dict) and state.get("status") == "prepared":
                 return {"status": "refresh_in_progress", "graph": str(graph)}
         except (OSError, ValueError):
             pass
@@ -306,6 +458,8 @@ def graph_status_details(root):
         state = json.loads(metadata.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"status": "present", "graph": str(graph), "warning": "freshness metadata invalid"}
+    if not isinstance(state, dict):
+        return {"status": "present", "graph": str(graph), "warning": "freshness metadata invalid"}
     paths = dirty_paths(root)
     recorded_head = state.get("head")
     current_head = head(root)
@@ -313,7 +467,15 @@ def graph_status_details(root):
     # freshness from the last full semantic refresh (semantic_head, falling back
     # to head for state files written before it existed). A code-only commit
     # advances head but must not hide earlier un-ingested semantic changes.
-    semantic_base = state.get("semantic_head") or recorded_head
+    if "semantic_head" in state:
+        # A present key is used verbatim: null or a malformed value is never
+        # "ingested", and must not fall back to head.
+        semantic_base = state["semantic_head"]
+        if not (isinstance(semantic_base, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", semantic_base)):
+            return {"status": "stale_semantic", "graph": str(graph), "changed": [],
+                    "warning": "graph has no valid semantic baseline; run a full refresh"}
+    else:
+        semantic_base = recorded_head
     code_paths = set(paths)
     semantic_paths = set(paths)
     for base, target in ((recorded_head, code_paths), (semantic_base, semantic_paths)):
@@ -349,9 +511,16 @@ def graph_warning(root):
         print(json.dumps({"graph_warning": details}, ensure_ascii=False))
 
 
+def strip_credentials(url):
+    """Remove user information, including everything up to the last '@' of the authority."""
+    url = re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@", r"\1", url)
+    return re.sub(r"^[^@/:\s]+:[^@\s]+@", "", url)
+
+
 def project_id(root):
     remote = run(["git", "remote", "get-url", "origin"], root, check=False).stdout.strip()
     if remote:
+        remote = strip_credentials(remote)
         normalized = re.sub(r"^git@([^:]+):", r"https://\1/", remote)
         normalized = re.sub(r"\.git$", "", normalized.rstrip("/"))
         emit("verified", project_id=normalized, source="origin")
@@ -363,6 +532,7 @@ def project_id(root):
 def project_identity(root):
     remote = run(["git", "remote", "get-url", "origin"], root, check=False).stdout.strip()
     if remote:
+        remote = strip_credentials(remote)
         normalized = re.sub(r"^git@([^:]+):", r"https://\1/", remote)
         return re.sub(r"\.git$", "", normalized.rstrip("/")), "origin"
     initial = run(["git", "rev-list", "--max-parents=0", "HEAD"], root).stdout.splitlines()[0]
@@ -407,7 +577,16 @@ def workflow_context(root):
     )
 
 
+def require_graph_output(root):
+    out = root / "graphify-out"
+    if out.is_symlink():
+        raise RuntimeError("graphify-out is a symlink; refusing to read or write graph state through it")
+    if out.exists() and (not out.is_dir() or out.resolve() != Path(root).resolve() / "graphify-out"):
+        raise RuntimeError("graphify-out must be a real directory inside the repository")
+
+
 def graph_prepare(root, deep=False):
+    require_graph_output(root)
     refresh = root / "graphify-out" / ".claude_refresh.json"
     if refresh.is_file():
         try:
@@ -432,6 +611,7 @@ def graph_abort(root, confirm):
     """Cancel a prepared refresh only when no semantic chunk was written."""
     if not confirm:
         raise ValueError("graph-abort requires --confirm")
+    require_graph_output(root)
     out = root / "graphify-out"
     refresh = out / ".claude_refresh.json"
     manifest_path = out / ".graphify_chunks.json"
@@ -542,17 +722,20 @@ def graph_doctor(root):
 
 
 def graph_finalize(root):
+    require_graph_output(root)
     spec = graph_script("../references/extraction-spec.md").resolve()
     result = run([sys.executable, str(graph_script("finalize.py")), str(root), "--spec", str(spec)], root)
     print(result.stdout.rstrip())
 
 
 def graph_post_commit(root):
+    require_graph_output(root)
     result = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root)
     print(result.stdout.rstrip())
 
 
 def graph_file(root):
+    require_graph_output(root)
     graph = root / "graphify-out" / "graph.json"
     if not graph.is_file():
         raise RuntimeError(f"Graphify graph missing: {graph}")
@@ -561,7 +744,7 @@ def graph_file(root):
 
 def graphify_read(root, arguments):
     graph_warning(root)
-    executable = shutil.which("graphify")
+    executable = trusted_which("graphify", repository_boundary(root))
     if not executable:
         raise RuntimeError("Graphify executable not found")
     result = run([executable, *arguments], root)
@@ -794,6 +977,8 @@ def graph_validate_chunk(root, raw_path):
 
 def commit(args):
     root = git_root(Path.cwd())
+    # Paths are exact file names, never pathspecs with magic.
+    os.environ["GIT_LITERAL_PATHSPECS"] = "1"
     paragraphs = message_paragraphs(args.subject, args.body, args.trailer)
     expected_message = "\n\n".join(paragraphs)
     if head(root) != args.expected_head:
@@ -807,7 +992,7 @@ def commit(args):
     if pre_staged & eligible:
         raise RuntimeError(f"eligible paths already have staged changes: {sorted(pre_staged & eligible)}")
     scope = ["--", *normalized] if pre_staged else []
-    run(["git", "diff", "--check", *scope], root)
+    run(["git", "diff", "--check", "--", *normalized], root)
     try:
         run(["git", "add", "--", *normalized], root)
         staged = names(root, cached=True) - pre_staged
@@ -828,7 +1013,12 @@ def commit(args):
     ).stdout.split("\0") if item}
     if committed != eligible or names(root, cached=True) != pre_staged:
         raise RuntimeError(f"commit contents differ from the eligible paths: {sorted(committed)}")
-    post = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root, check=False)
+    os.environ.pop("GIT_LITERAL_PATHSPECS", None)
+    try:
+        require_graph_output(root)
+        post = run([sys.executable, str(graph_script("post_commit.py")), str(root)], root, check=False)
+    except RuntimeError as exc:
+        post = subprocess.CompletedProcess([], 1, stdout="", stderr=str(exc))
     try:
         graphify_result = json.loads(post.stdout.strip())
     except (TypeError, ValueError):
@@ -847,11 +1037,24 @@ def amend(args):
         raise RuntimeError("HEAD changed; refusing amend")
     if names(root, cached=True):
         raise RuntimeError("index is not empty; refusing content-changing amend")
+    if not args.allow_pushed:
+        containing = run(["git", "branch", "-r", "--contains", "HEAD"], root, check=False).stdout.strip()
+        if containing:
+            raise RuntimeError(
+                "HEAD is already pushed (%s); amending would rewrite published history "
+                "(pass --allow-pushed to override)" % containing.splitlines()[0].strip())
+    known_remote_refs = run(["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
+                            root, check=False).stdout.strip()
     run(["git", "commit", "--amend", *message_args(paragraphs)], root)
     actual = full_message(root)
     if actual != "\n\n".join(paragraphs):
         raise RuntimeError(f"amended message mismatch: {actual!r}")
-    emit("amended", old_commit=old_hash, new_commit=head(root), old_subject=old_subject, subject=subject(root))
+    details = {}
+    if not known_remote_refs:
+        details["note"] = ("no remote-tracking refs are known, so whether the old commit was "
+                           "pushed could not be checked")
+    emit("amended", old_commit=old_hash, new_commit=head(root), old_subject=old_subject,
+         subject=subject(root), **details)
 
 
 def main():
@@ -869,6 +1072,7 @@ def main():
     amend_p.add_argument("--subject", required=True)
     amend_p.add_argument("--body")
     amend_p.add_argument("--trailer", action="append", default=[])
+    amend_p.add_argument("--allow-pushed", action="store_true")
     remove_p = sub.add_parser("remove")
     remove_p.add_argument("--recursive", action="store_true")
     remove_p.add_argument("--confirm", action="store_true")
@@ -941,4 +1145,7 @@ if __name__ == "__main__":
         main()
     except (OSError, RuntimeError, ValueError) as exc:
         emit("failed", error=str(exc))
+        raise SystemExit(1)
+    except Exception as exc:  # noqa: BLE001 - a helper must never end in a traceback
+        emit("failed", error=f"internal error: {exc.__class__.__name__}: {exc}")
         raise SystemExit(1)

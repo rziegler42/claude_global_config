@@ -296,7 +296,7 @@ class FinalizeValidator(unittest.TestCase):
             "SCORES": {"EXTRACTED": {1.0}, "INFERRED": {0.95, 0.85, 0.75, 0.65, 0.55}},
         }
         for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name in {"valid", "file_sha256"}:
+            if isinstance(node, ast.FunctionDef) and node.name in {"valid", "file_sha256", "whole_number", "safe_text"}:
                 exec(compile(ast.Module([node], []), "finalize.py", "exec"), cls.ns)
 
     def test_non_dict_edge_is_rejected_not_a_crash(self):

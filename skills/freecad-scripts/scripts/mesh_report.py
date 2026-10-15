@@ -10,6 +10,7 @@ Or import from a script / execute_code:
 Needs only FreeCAD's bundled Python (numpy included). Not valid for GUI-only calls.
 """
 import json
+import os
 import math
 import sys
 
@@ -330,7 +331,17 @@ def main(argv):
     out["fits"] = fits
     text = json.dumps(out, indent=2)
     if "--json" in args:
-        with open(args[args.index("--json") + 1], "w") as fh:
+        position = args.index("--json") + 1
+        if position >= len(args):
+            print("--json needs an output path")
+            return 2
+        target = os.path.abspath(args[position])
+        if (target == os.path.abspath(path) or os.path.islink(target)
+                or os.path.splitext(target)[1].lower() != ".json"):
+            print("refusing --json target %s: it must be a new or existing .json file, not the input or a symlink"
+                  % target)
+            return 2
+        with open(target, "w") as fh:
             fh.write(text)
     print(text)
     return 0

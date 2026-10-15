@@ -11,7 +11,7 @@ skills:
   - security-review
 hooks:
   PreToolUse:
-    - matcher: Bash|Write|Edit
+    - matcher: Bash|Write|Edit|NotebookEdit|Read|Glob|Grep
       hooks:
         - type: command
           command: python3 -B "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/review_agent_guard.py" reviewer

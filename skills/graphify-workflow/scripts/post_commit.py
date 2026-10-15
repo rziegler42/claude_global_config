@@ -4,8 +4,10 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 
@@ -14,6 +16,22 @@ SEMANTIC_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".docx", ".xlsx",
     ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mp3", ".wav", ".m4a", ".ogg",
 }
+
+
+def atomic_write(path, text):
+    """Write text through a temporary file and os.replace, never through a symlink."""
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def emit(status, **details):
@@ -28,8 +46,8 @@ def current_head(root):
 
 
 def record_result(path, commit, status, attempts=1, **details):
-    path.write_text(json.dumps({"commit": commit, "status": status, "attempts": attempts,
-                                **details}, indent=2), encoding="utf-8")
+    atomic_write(path, json.dumps({"commit": commit, "status": status, "attempts": attempts,
+                                   **details}, indent=2))
     emit(status, commit=commit, attempts=attempts, **details)
 
 
@@ -69,9 +87,13 @@ def graph_counts(path):
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
     nodes = data.get("nodes", [])
     edges = data.get("edges", data.get("links", []))
     hyperedges = data.get("hyperedges", [])
+    if not all(isinstance(item, list) for item in (nodes, edges, hyperedges)):
+        return None
     communities = {
         node.get("community") for node in nodes
         if isinstance(node, dict) and node.get("community") is not None
@@ -107,11 +129,16 @@ def record_code_refresh(root):
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             state = {}
-    if state.get("head") and not state.get("semantic_head"):
+        if not isinstance(state, dict):
+            state = {}
+    # A graph this helper never built has no known semantic baseline.
+    if "semantic_head" not in state and not state.get("head"):
+        state["semantic_head"] = None
+    elif state.get("head") and not state.get("semantic_head") and "semantic_head" not in state:
         state["semantic_head"] = state["head"]
     state.update({"head": head_result.stdout.strip() if head_result.returncode == 0 else None,
                   "generated_at": datetime.now(timezone.utc).isoformat()})
-    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    atomic_write(state_path, json.dumps(state, indent=2))
 
 
 def main():

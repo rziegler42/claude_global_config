@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 
@@ -34,8 +35,42 @@ from graphify.extract import extract
 EMPTY = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
 
 
+def atomic_write(path, text):
+    """Write text through a temporary file and os.replace, never through a symlink."""
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def head_commit(root):
+    import subprocess
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def regular_inside(path, root):
+    """A real file (not a symlink, device, or FIFO) that lives under the project root."""
+    candidate = Path(path)
+    try:
+        if candidate.is_symlink() or not candidate.is_file():
+            return False
+        candidate.resolve().relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def source_record(path):
@@ -107,13 +142,15 @@ def main():
     code = [Path(p) for p in detected.get("files", {}).get("code", [])]
     ast = extract(code, cache_root=root, root=root) if code else dict(EMPTY)
     write_json(out / ".graphify_ast.json", ast)
-    semantic = [str(Path(p).resolve()) for kind in ("document", "paper", "image") for p in detected.get("files", {}).get(kind, [])]
+    semantic = [str(Path(p).resolve()) for kind in ("document", "paper", "image")
+                for p in detected.get("files", {}).get(kind, []) if regular_inside(p, root)]
     cached_n, cached_e, cached_h, uncached = check_semantic_cache(semantic, root=root, prompt_file=spec)
     cached_e, cached_h, pruned_edges, pruned_hyperedges = prune_dangling_cached(
         ast, cached_n, cached_e, cached_h
     )
     write_json(out / ".graphify_cached.json", {"nodes": cached_n, "edges": cached_e, "hyperedges": cached_h})
-    images = {str(Path(p).resolve()) for p in detected.get("files", {}).get("image", [])}
+    images = {str(Path(p).resolve()) for p in detected.get("files", {}).get("image", [])
+              if regular_inside(p, root)}
     normal = sorted((p for p in uncached if p not in images), key=lambda p: (str(Path(p).parent), p))
     groups = chunk_sources(normal, args.chunk_size, args.chunk_bytes)
     groups.extend([[source_record(p)] for p in sorted(images.intersection(uncached))])
@@ -143,7 +180,7 @@ def main():
         write_json(out / ".graphify_semantic_new.json", EMPTY)
     # The marker is written last: a prepare that fails earlier leaves no
     # "prepared" marker without its manifest.
-    write_json(out / ".claude_refresh.json", {"status": "prepared", "started_at": started_at})
+    write_json(out / ".claude_refresh.json", {"status": "prepared", "started_at": started_at, "head": head_commit(root)})
     print(json.dumps({"graphify": version, "code_files": len(code), "semantic_files": len(semantic), "cached_files": len(semantic) - len(uncached), "chunks": len(chunks), "pruned_cached_edges": pruned_edges, "pruned_cached_hyperedges": pruned_hyperedges}))
 
 

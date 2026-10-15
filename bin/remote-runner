@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import math
@@ -20,10 +21,10 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
-import tomllib
 import uuid
 
 
@@ -37,12 +38,54 @@ JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 # The runner fetches from the repository's origin, so only ordinary transports are
 # accepted: https, ssh, or scp-style user@host:path. Nothing may start with "-".
-SOURCE_URL = re.compile(r"^(https://|ssh://|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\x00-\x1f]+$")
+SOURCE_URL = re.compile(
+    r"^(https://|ssh://|[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:)[^\s\x00-\x1f]+$")
+STATE_NAMES = frozenset({"STARTING", "RUNNING", "PASSED", "FAILED", "CANCELLED", "FINISHED",
+                         "UNKNOWN_EXIT"})
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+SOURCE_REF = re.compile(r"^refs/(heads|tags)/[A-Za-z0-9._/-]{1,200}$")
+STARTING_GRACE = 900.0
+LOG_LIMIT = 1024 * 1024
+ARTIFACT_LIMIT = 2000
 REQUIREMENT_KEYS = frozenset({"os", "arch", "min_memory_gib", "min_cpu_cores", "labels"})
+
+
+def valid_source_url(url: object) -> bool:
+    """An ordinary transport, no embedded password, and no option-like user or host."""
+    if not isinstance(url, str) or not SOURCE_URL.fullmatch(url):
+        return False
+    if url.startswith(("https://", "ssh://")):
+        authority = url.split("://", 1)[1].split("/", 1)[0]
+        userinfo, _, host = authority.rpartition("@")
+        if not host or host.startswith("-"):
+            return False
+        if userinfo and (":" in userinfo or userinfo.startswith("-")):
+            return False
+    return True
 
 
 def is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def finite_number(value: object) -> float | None:
+    """A float for a finite, reasonably sized number; None for anything else."""
+    if not is_number(value):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) and abs(number) < 1e15 else None
+
+
+def read_record(path: Path) -> dict[str, object] | None:
+    """A job record, or None when it is unreadable, undecodable, or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def retention_days(value: float, name: str) -> float:
@@ -71,6 +114,7 @@ def run(argv: list[str], *, cwd: Path | None = None, check: bool = True,
 
 
 def load_remotes() -> dict[str, dict[str, object]]:
+    import tomllib  # controller only; the streamed worker needs no TOML
     path = next((item for item in CONFIG_PATHS if item.is_file()), None)
     if path is None:
         fail("no remotes file found (expected ~/.claude/remotes.toml)")
@@ -125,6 +169,7 @@ def project_config(repo: Path, revision: str | None = None
     runs on the runner is the one recorded in the revision under test, not
     whatever the working tree holds.
     """
+    import tomllib  # controller only; the streamed worker needs no TOML
     path = repo / ".claude" / "remote-runner.toml"
     if revision is None:
         if not path.is_file():
@@ -183,9 +228,9 @@ def capability_mismatches(config: dict[str, object],
             continue
         available_key = key.removeprefix("min_")
         available = capabilities.get(available_key)
-        if not is_number(required):
-            mismatches.append(f"{key} requirement must be a number")
-        elif not is_number(available) or available < required:
+        if not is_number(required) or not math.isfinite(required):
+            mismatches.append(f"{key} requirement must be a finite number")
+        elif not is_number(available) or not math.isfinite(available) or not (available >= required):
             mismatches.append(f"{key}={required} required")
     required_labels = requirements.get("labels", [])
     available_labels = capabilities.get("labels", [])
@@ -214,7 +259,7 @@ def remote_name_from_job(job: str) -> str:
 def invoke_worker(remote: str, operation: str, *arguments: str,
                   stream: bool = False) -> subprocess.CompletedProcess[bytes]:
     config = remote_config(remote)
-    worker_args = ["python3", "-", "--worker", operation,
+    worker_args = ["python3", "-I", "-", "--worker", operation,
                    "--workspace-root", str(config["workspace_root"]),
                    "--max-jobs", str(config["max_jobs"]), *arguments]
     # ssh joins its remote arguments with spaces and gives them to the remote
@@ -309,8 +354,9 @@ def controller(args: argparse.Namespace) -> None:
             if remote is None:
                 fail(f"no eligible available remote for profile {args.profile!r}: {json.dumps(report)}")
         source_url = git_value(repo, "remote", "get-url", "origin")
-        if not SOURCE_URL.fullmatch(source_url):
-            fail("origin URL must be https://, ssh:// or scp-style user@host:path")
+        if not valid_source_url(source_url):
+            fail("origin URL must be https://, ssh:// or scp-style user@host:path, "
+                 "without an embedded password")
         source_ref = source_ref_for(repo, ref)
         job = f"{remote}--{project}--{time.strftime('%Y%m%d-%H%M%S')}--{uuid.uuid4().hex[:8]}"
         if not JOB_ID.fullmatch(job):
@@ -321,7 +367,14 @@ def controller(args: argparse.Namespace) -> None:
             *( ["--source-ref", b64(source_ref)] if source_ref else []),
             "--command", b64(profiles[args.profile]),
         )
-        print(result.stdout.decode(), end="")
+        try:
+            data = json.loads(result.stdout.decode())
+        except ValueError:
+            print(result.stdout.decode(), end="")
+            return
+        data.update({"profile": args.profile, "command": profiles[args.profile],
+                     "source": source_url, "ref": ref})
+        print(json.dumps(data, indent=2))
         return
 
     if args.action == "prune":
@@ -344,24 +397,66 @@ def controller(args: argparse.Namespace) -> None:
     print(result.stdout.decode(), end="")
 
 
+def process_start(pid: int) -> str | None:
+    """An identifier for this incarnation of a pid, so a reused pid is not mistaken for the job."""
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+        return "proc:" + data.rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError, ValueError):
+        pass
+    try:
+        started = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                                 text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "ps:" + started if started else None
+
+
+def job_process_alive(metadata: dict[str, object], *, require_identity: bool = False) -> bool:
+    """Whether the recorded pid is this job's process.
+
+    A record that carries ``pid_start`` is verified against the running process.
+    A record without one predates start times; it may still be counted for
+    capacity, but ``require_identity`` (used before signalling) refuses it.
+    """
+    pid = metadata.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OverflowError):
+        return False
+    recorded = metadata.get("pid_start")
+    if not isinstance(recorded, str):
+        return not require_identity
+    current = process_start(pid)
+    return current is not None and current == recorded
+
+
 def refresh_state(metadata: dict[str, object], metadata_path: Path) -> bool:
     """Return whether the recorded job process remains live."""
-    pid = metadata.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool):
-        return False
-    # Metadata is job-writable, so a recorded pid is only a hint: 0 or 1, a pid
-    # owned by another user, or an out-of-range value are not this job's process
-    # and must neither crash the runner nor keep the job "live".
-    if pid > 1:
-        try:
-            os.kill(pid, 0)
+    if metadata.get("state") == "STARTING":
+        created = finite_number(metadata.get("created_at"))
+        if created is not None and 0 <= time.time() - created < STARTING_GRACE:
             return True
-        except (ProcessLookupError, PermissionError, OverflowError):
-            pass
+        metadata["state"] = "FAILED"
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        return False
+    # The exit-status file is located from the job directory, never from a path
+    # recorded in metadata, which the job itself can rewrite. Once it exists the
+    # job's command has finished, so no live process can be the job.
+    result = metadata_path.parent / "exit-status"
+    # A record that proves its process identity is judged by that process, so a
+    # job cannot hide itself (or dodge cancel) by writing exit-status early.
+    finished = (metadata.get("state") == "RUNNING" and result.is_file()
+                and not isinstance(metadata.get("pid_start"), str))
+    # Metadata is job-writable, so a recorded pid is only a hint: 0 or 1, a pid
+    # owned by another user, a reused pid (start time differs), or an out-of-range
+    # value are not this job's process and must neither crash the runner nor keep
+    # the job "live".
+    if not finished and job_process_alive(metadata):
+        return True
     if metadata.get("state") == "RUNNING":
-        # The exit-status file is located from the job directory, never from a
-        # path recorded in metadata, which the job itself can rewrite.
-        result = metadata_path.parent / "exit-status"
         if result.is_file() and result.read_text().strip() == "0":
             metadata["state"] = "PASSED"
         elif result.is_file():
@@ -372,15 +467,75 @@ def refresh_state(metadata: dict[str, object], metadata_path: Path) -> bool:
     return False
 
 
+def public_view(metadata: dict[str, object]) -> dict[str, object]:
+    """The job record as reported to the caller: typed, bounded, and marked untrusted.
+
+    The metadata file is writable by the job itself, so nothing in it is
+    authoritative. Only allow-listed, validated fields are returned.
+    """
+    def word(value: object, pattern: re.Pattern[str]) -> str | None:
+        return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+    commit = word(metadata.get("commit"), HEX40)
+    dut_commit = word(metadata.get("dut_commit"), HEX40)
+    dut_clean = metadata.get("dut_clean") if isinstance(metadata.get("dut_clean"), bool) else None
+    if commit is None or dut_commit is None or dut_clean is None:
+        integrity = "invalid"
+    elif commit != dut_commit or dut_clean is not True:
+        integrity = "mismatch"
+    else:
+        integrity = "ok"
+    state = metadata.get("state")
+    created = finite_number(metadata.get("created_at"))
+    pid = metadata.get("pid")
+    return {
+        "untrusted_job_data": True,
+        "job": word(metadata.get("job"), JOB_ID),
+        "project": word(metadata.get("project"), PROJECT_ID),
+        "state": state if isinstance(state, str) and state in STATE_NAMES else "UNKNOWN",
+        "commit": commit,
+        "dut_commit": dut_commit,
+        "dut_clean": dut_clean,
+        "integrity": integrity,
+        "source_ref": word(metadata.get("source_ref"), SOURCE_REF),
+        "created_at": created,
+        "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) and abs(pid) < 2 ** 31 else None,
+        "note": "job-writable record; compare dut_commit with the commit you submitted",
+    }
+
+
+def read_log(path: Path) -> str:
+    """The tail of a job log: never through a link, bounded, without control characters."""
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return "[run.log is missing or is not a regular file]\n"
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            return "[run.log is not a regular file]\n"
+        omitted = info.st_size > LOG_LIMIT
+        if omitted:
+            handle.seek(info.st_size - LOG_LIMIT)
+        data = handle.read(LOG_LIMIT)
+    text = data.decode("utf-8", errors="replace")
+    cleaned = "".join(ch if ch in "\n\t" or ch.isprintable() else "?" for ch in text)
+    return ("[earlier output omitted]\n" if omitted else "") + cleaned
+
+
 def availability_worker(jobs_root: Path, max_jobs: int) -> None:
     running = 0
     for metadata_path in jobs_root.glob("*/metadata.json"):
-        try:
-            metadata = json.loads(metadata_path.read_text())
-        except (OSError, json.JSONDecodeError):
+        if metadata_path.parent.is_symlink():
             continue
-        if refresh_state(metadata, metadata_path):
-            running += 1
+        metadata = read_record(metadata_path)
+        if metadata is None:
+            continue
+        try:
+            if refresh_state(metadata, metadata_path):
+                running += 1
+        except (OSError, ValueError, OverflowError, TypeError):
+            continue
     print(json.dumps({
         "running_jobs": running,
         "max_jobs": max_jobs,
@@ -395,16 +550,21 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
     now = time.time()
     candidates: list[dict[str, object]] = []
     for metadata_path in sorted(jobs_root.glob("*/metadata.json")):
-        try:
-            metadata = json.loads(metadata_path.read_text())
-        except (OSError, json.JSONDecodeError):
+        if metadata_path.parent.is_symlink() or metadata_path.parent.parent != jobs_root:
             continue
+        metadata = read_record(metadata_path)
         job_dir = metadata_path.parent
-        if refresh_state(metadata, metadata_path):
+        if metadata is None:
             continue
-        state = str(metadata.get("state", "UNKNOWN_EXIT"))
-        created = metadata.get("created_at")
-        timestamp = float(created) if isinstance(created, (int, float)) else job_dir.stat().st_mtime
+        try:
+            if refresh_state(metadata, metadata_path):
+                continue
+        except (OSError, ValueError, OverflowError, TypeError):
+            continue
+        state_value = metadata.get("state", "UNKNOWN_EXIT")
+        state = state_value if isinstance(state_value, str) and state_value in STATE_NAMES else "UNKNOWN_EXIT"
+        created = finite_number(metadata.get("created_at"))
+        timestamp = created if created is not None else job_dir.stat().st_mtime
         age_days = (now - timestamp) / 86400
         limit = args.success_days if state == "PASSED" else args.failure_days
         if age_days < limit:
@@ -439,9 +599,12 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
                         ["git", "--git-dir", str(bare), "worktree", "remove", "--force", worktree],
                         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
-            if job_dir.parent == jobs_root and job_dir.is_dir():
-                shutil.rmtree(job_dir)
-                removed.append(job)
+            try:
+                if job_dir.parent == jobs_root and job_dir.is_dir() and not job_dir.is_symlink():
+                    shutil.rmtree(job_dir)
+                    removed.append(job)
+            except OSError:
+                continue
         print(json.dumps({"mode": "applied", "removed": removed}, indent=2))
     else:
         print(json.dumps({"mode": "preview", "candidates": candidates}, indent=2))
@@ -467,111 +630,167 @@ def worker(args: argparse.Namespace) -> None:
     metadata_path = job_dir / "metadata.json"
 
     if args.worker_action == "submit":
-        if job_dir.exists():
-            fail(f"job already exists: {args.job}")
-        running = 0
-        for record in jobs_root.glob("*/metadata.json"):
-            try:
-                metadata = json.loads(record.read_text())
-                if refresh_state(metadata, record):
-                    running += 1
-            except (OSError, json.JSONDecodeError):
-                continue
-        if running >= args.max_jobs:
-            fail(f"runner capacity reached ({running}/{args.max_jobs} jobs running)")
-
         project = unb64(args.project)
         source_url = unb64(args.source_url)
         source_ref = unb64(args.source_ref) if args.source_ref else None
         command = unb64(args.command)
         if not PROJECT_ID.fullmatch(project):
             fail("project ID contains unsupported characters")
-        if not SOURCE_URL.fullmatch(source_url):
-            fail("source URL must be https://, ssh:// or scp-style user@host:path")
-        # The object cache is keyed by project and origin, so two repositories that
-        # claim the same project ID cannot share, or repoint, one another's objects.
-        cache = f"{project}-{hashlib.sha256(source_url.encode()).hexdigest()[:12]}"
-        bare = projects_root / cache / "repo.git"
-        bare.parent.mkdir(parents=True, exist_ok=True)
-        if not bare.exists():
-            run(["git", "init", "--bare", str(bare)])
-            run(["git", "-C", str(bare), "remote", "add", "--", "origin", source_url])
-        else:
-            run(["git", "-C", str(bare), "remote", "set-url", "--", "origin", source_url])
+        if not valid_source_url(source_url):
+            fail("source URL must be https://, ssh:// or scp-style user@host:path, "
+                 "without an embedded password")
+        # Reserve the slot atomically: count live jobs and create this job's
+        # directory under one lock, so concurrent submissions cannot all pass the
+        # capacity check before any of them is recorded.
+        with open(jobs_root / ".submit.lock", "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if job_dir.exists():
+                fail(f"job already exists: {args.job}")
+            running = 0
+            for record in jobs_root.glob("*/metadata.json"):
+                if record.parent.is_symlink():
+                    continue
+                existing = read_record(record)
+                if existing is None:
+                    continue
+                try:
+                    if refresh_state(existing, record):
+                        running += 1
+                except (OSError, ValueError, OverflowError, TypeError):
+                    continue
+            if running >= args.max_jobs:
+                fail(f"runner capacity reached ({running}/{args.max_jobs} jobs running)")
+            job_dir.mkdir()
+            metadata_path.write_text(json.dumps({
+                "job": args.job, "project": project, "state": "STARTING", "pid": None,
+                "created_at": time.time(),
+            }, indent=2) + "\n")
         try:
-            run([
-                "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
-                "-c", "protocol.ssh.allow=always", "-C", str(bare),
-                "fetch", "--prune", "origin", source_ref or args.commit,
-            ])
-            run(["git", "-C", str(bare), "cat-file", "-e", f"{args.commit}^{{commit}}"])
-        except subprocess.CalledProcessError:
-            fail("runner could not fetch the requested revision from origin; push the branch or tag first")
+            # The object cache is keyed by project and origin, so two repositories that
+            # claim the same project ID cannot share, or repoint, one another's objects.
+            cache = f"{project}-{hashlib.sha256(source_url.encode()).hexdigest()[:12]}"
+            bare = projects_root / cache / "repo.git"
+            bare.parent.mkdir(parents=True, exist_ok=True)
+            if not bare.exists():
+                run(["git", "init", "--bare", str(bare)], capture=True)
+                run(["git", "-C", str(bare), "remote", "add", "--", "origin", source_url], capture=True)
+            else:
+                run(["git", "-C", str(bare), "remote", "set-url", "--", "origin", source_url], capture=True)
+            try:
+                run([
+                    "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+                    "-c", "protocol.ssh.allow=always", "-C", str(bare),
+                    "fetch", "--prune", "origin", source_ref or args.commit,
+                ], capture=True)
+                run(["git", "-C", str(bare), "cat-file", "-e", f"{args.commit}^{{commit}}"], capture=True)
+            except subprocess.CalledProcessError:
+                fail("runner could not fetch the requested revision from origin; push the branch or tag first")
 
-        job_dir.mkdir()
-        worktree = job_dir / "worktree"
-        run(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(worktree), args.commit])
-        dut_commit = git_value(worktree, "rev-parse", "HEAD")
-        dut_clean = not git_value(worktree, "status", "--porcelain")
-        if dut_commit != args.commit or not dut_clean:
+            worktree = job_dir / "worktree"
+            run(["git", "--git-dir", str(bare), "worktree", "add", "--detach", str(worktree), args.commit], capture=True)
+            dut_commit = git_value(worktree, "rev-parse", "HEAD")
+            dut_clean = not git_value(worktree, "status", "--porcelain")
+            if dut_commit != args.commit or not dut_clean:
+                subprocess.run(
+                    ["git", "--git-dir", str(bare), "worktree", "remove", "--force", str(worktree)],
+                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                shutil.rmtree(job_dir, ignore_errors=True)
+                fail("remote DUT checkout did not match the requested clean commit")
+            log = job_dir / "run.log"
+            exit_status = job_dir / "exit-status"
+            shell_command = (
+                f"cd {shlex.quote(str(worktree))} && {command}; result=$?; "
+                f"printf '%s\\n' \"$result\" > {shlex.quote(str(exit_status))}; "
+                "exit \"$result\""
+            )
+            with log.open("wb") as output:
+                process = subprocess.Popen(
+                    ["bash", "-lc", shell_command],
+                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+            metadata = {
+                "job": args.job, "project": project, "cache": cache, "commit": args.commit,
+                "source_ref": source_ref, "dut_commit": dut_commit, "dut_clean": dut_clean,
+                "command": command, "created_at": time.time(), "pid": process.pid,
+                "state": "RUNNING", "worktree": str(worktree), "log": str(log),
+                "exit_status": str(exit_status), "pid_start": process_start(process.pid),
+                "record_version": 2,
+            }
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+            print(json.dumps({
+                "job": args.job, "state": "RUNNING", "pid": process.pid,
+                "dut_commit": dut_commit, "dut_clean": dut_clean,
+            }, indent=2))
+        except BaseException:
             subprocess.run(
-                ["git", "--git-dir", str(bare), "worktree", "remove", "--force", str(worktree)],
+                ["git", "--git-dir", str(bare), "worktree", "remove", "--force", str(job_dir / "worktree")],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             shutil.rmtree(job_dir, ignore_errors=True)
-            fail("remote DUT checkout did not match the requested clean commit")
-        log = job_dir / "run.log"
-        exit_status = job_dir / "exit-status"
-        shell_command = (
-            f"cd {shlex.quote(str(worktree))} && {command}; result=$?; "
-            f"printf '%s\\n' \"$result\" > {shlex.quote(str(exit_status))}; "
-            "exit \"$result\""
-        )
-        with log.open("wb") as output:
-            process = subprocess.Popen(
-                ["bash", "-lc", shell_command],
-                stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
-            )
-        metadata = {
-            "job": args.job, "project": project, "cache": cache, "commit": args.commit,
-            "source_ref": source_ref, "dut_commit": dut_commit, "dut_clean": dut_clean,
-            "command": command, "created_at": time.time(), "pid": process.pid,
-            "state": "RUNNING", "worktree": str(worktree), "log": str(log),
-            "exit_status": str(exit_status),
-        }
-        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
-        print(json.dumps({
-            "job": args.job, "state": "RUNNING", "pid": process.pid,
-            "dut_commit": dut_commit, "dut_clean": dut_clean,
-        }, indent=2))
+            raise
         return
 
-    if not metadata_path.is_file():
+    if job_dir.is_symlink() or not metadata_path.is_file():
         fail(f"unknown job: {args.job}")
-    metadata = json.loads(metadata_path.read_text())
+    metadata = read_record(metadata_path)
+    if metadata is None:
+        fail(f"job record is unreadable: {args.job}")
     pid = metadata.get("pid")
     if args.worker_action == "status":
         refresh_state(metadata, metadata_path)
-        print(json.dumps(metadata, indent=2))
+        print(json.dumps(public_view(metadata), indent=2))
     elif args.worker_action == "cancel":
-        if (metadata.get("state") == "RUNNING" and isinstance(pid, int)
-                and not isinstance(pid, bool) and pid > 1):
+        # Bring the record up to date first: a finished job whose record still
+        # says RUNNING must never lead to signalling a pid the kernel has reused.
+        refresh_state(metadata, metadata_path)
+        if (metadata.get("state") == "RUNNING"
+                and job_process_alive(metadata, require_identity=True)
+                and isinstance(pid, int) and not isinstance(pid, bool) and pid > 1):
             try:
                 os.killpg(pid, signal.SIGTERM)
                 metadata["state"] = "CANCELLED"
             except (ProcessLookupError, PermissionError, OverflowError):
                 metadata["state"] = "FINISHED"
             metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
-        print(json.dumps(metadata, indent=2))
+        print(json.dumps(public_view(metadata), indent=2))
     elif args.worker_action == "log":
         log = job_dir / "run.log"
         if args.follow:
-            subprocess.run(["tail", "-n", "+1", "-f", str(log)], check=False)
+            if log.is_symlink() or not log.is_file():
+                print("[run.log is missing or is not a regular file]")
+            else:
+                follower = subprocess.Popen(["tail", "-n", "+1", "-f", str(log)],
+                                            stdout=subprocess.PIPE, text=True, errors="replace")
+                sent = 0
+                try:
+                    for line in follower.stdout:  # type: ignore[union-attr]
+                        clean = "".join(ch if ch in "\n\t" or ch.isprintable() else "?" for ch in line)
+                        print(clean, end="", flush=True)
+                        sent += len(clean)
+                        if sent > 10 * LOG_LIMIT:
+                            print("\n[output limit reached]")
+                            break
+                finally:
+                    follower.terminate()
         else:
-            print(log.read_text(errors="replace"), end="")
+            print(read_log(log), end="")
     elif args.worker_action == "artifacts":
-        entries = [str(path.relative_to(job_dir)) for path in job_dir.rglob("*") if path.is_file()]
-        print(json.dumps({"job": args.job, "files": entries}, indent=2))
+        entries: list[str] = []
+        truncated = False
+        for current, _dirs, files in os.walk(job_dir, followlinks=False):
+            for name in files:
+                full = os.path.join(current, name)
+                if os.path.islink(full):
+                    continue
+                if len(entries) >= ARTIFACT_LIMIT:
+                    truncated = True
+                    break
+                entries.append(os.path.relpath(full, job_dir))
+            if truncated:
+                break
+        print(json.dumps({"job": args.job, "files": entries, "truncated": truncated,
+                          "untrusted_job_data": True}, indent=2))
 
 
 def parser() -> argparse.ArgumentParser:

@@ -5,6 +5,12 @@ tools: Read, Write, Edit
 disallowedTools: Bash, Glob, Grep, WebFetch, WebSearch
 permissionMode: default
 maxTurns: 32
+hooks:
+  PreToolUse:
+    - matcher: Read|Write|Edit|NotebookEdit|Bash|Glob|Grep
+      hooks:
+        - type: command
+          command: python3 -B "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/review_agent_guard.py" chunk
 ---
 
 Read every explicitly assigned source file completely (using paged reads until

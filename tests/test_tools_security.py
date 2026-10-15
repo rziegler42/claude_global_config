@@ -334,7 +334,10 @@ class WorkerTrustsItsOwnDirectories(unittest.TestCase):
     def test_cancel_ignores_a_forged_pid(self):
         self.job("job-x", {"state": "RUNNING", "pid": 1})
         output = self.run_worker("--worker", "cancel", "--job", "job-x")
-        self.assertIn('"RUNNING"', output)  # nothing was signalled, nothing crashed
+        # Nothing was signalled and nothing crashed: pid 1 is not this job's
+        # process, so the record is brought up to date instead of cancelled.
+        self.assertIn('"UNKNOWN_EXIT"', output)
+        self.assertNotIn("CANCELLED", output)
 
     def test_workspace_root_shell_expansion_is_rejected(self):
         def config(root):

@@ -5,6 +5,12 @@ tools: Read, Glob, Grep, Bash
 disallowedTools: Edit, Write, WebFetch, WebSearch
 permissionMode: default
 maxTurns: 15
+hooks:
+  PreToolUse:
+    - matcher: Bash|Write|Edit|NotebookEdit|Read|Glob|Grep
+      hooks:
+        - type: command
+          command: python3 -B "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/review_agent_guard.py" committer
 ---
 
 Act only when the parent supplies evidence of the user's explicit commit request, intended outcome, exact file paths eligible for staging, verification status, and a proposed one-line subject. A commit never authorizes a push.
