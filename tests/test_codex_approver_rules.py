@@ -665,6 +665,9 @@ def json_dumps(value):
     return __import__("json").dumps(value)
 
 
+DIGEST = "2c2da46c343b167d2a1dfa004881ce2b792425355aeb9378b93d03fa41dcbbd5"
+
+
 class EntropyAndDeadlineTests(RuleCase):
     def commit_of(self, text):
         (self.repo / "s.txt").write_text(text)
@@ -697,6 +700,54 @@ class EntropyAndDeadlineTests(RuleCase):
                 "func test_handles_empty_input_and_reports_the_error_clearly_enough()\n"
                 "mod pytest_runtest_makereport\nver 1.2.3-rc.4+build.5\n")
         self.assertNotIn("no_secret_lines", self.commit_of(text)["failed"])
+
+    def test_a_digest_on_the_line_after_its_checksum_word_is_not_a_secret(self):
+        text = ("- Source: `data.zip`, 401,502,981 bytes, SHA-256\n"
+                "  `2c2da46c343b167d2a1dfa004881ce2b792425355aeb9378b93d03fa41dcbbd5`, downloaded\n")
+        self.assertNotIn("no_secret_lines", self.commit_of(text)["failed"])
+
+    def test_the_checksum_word_two_lines_earlier_does_not_exempt_a_digest(self):
+        text = "SHA-256 of the file follows\nunrelated line\n%s\n" % DIGEST
+        self.assertFails(self.commit_of(text), "no_secret_lines")
+
+    def test_the_previous_line_exemption_covers_hex_only(self):
+        token = "q8Zx3Lp0Vb7Nw2KcR5tYm9UaJ4sHd6GfE1iO8PzXyWvB"
+        self.assertFails(self.commit_of("checksum:\nvalue %s\n" % token), "no_secret_lines")
+
+    def test_remote_runner_job_ids_are_not_secrets(self):
+        text = "job `ned--othello--20261016-140711--da5b1307` passed\n"
+        self.assertNotIn("no_secret_lines", self.commit_of(text)["failed"])
+
+    def test_long_wordy_paths_are_not_secrets(self):
+        text = ('command = "$HOME/venvs/othello/bin/python --data '
+                '$HOME/datasets/othello/Egaroucid_Train_Data.zip --cache $HOME/datasets/othello/cache-2m.npz"\n')
+        self.assertNotIn("no_secret_lines", self.commit_of(text)["failed"])
+
+    def test_a_secret_dressed_as_a_path_is_still_caught(self):
+        for token in ("HOME/q8Zx3Lp0Vb7Nw2KcR5tYm9UaJ4sHd6GfE1iO8PzXyWvB",
+                      "a/Xk9Pq2LmZ7vB4nRt8Wc3Yd6H/Xk9Pq2LmZ7vB4nRt8Wc3Yd6H",
+                      "keys/q8Zx3Lp0Vb7Nw2KcR5tYm9UaJ4sHd6GfE1iO8PzXyWvB"):
+            with self.subTest(token=token):
+                self.assertFails(self.commit_of("x\nvalue %s\n" % token), "no_secret_lines")
+
+    def test_secret_hits_name_the_kind_but_never_the_token(self):
+        result = self.commit_of("x\nvalue %s\n" % DIGEST)
+        self.assertEqual(result["facts"]["secret_hits"], [{"path": "s.txt", "kind": "long_hex"}])
+        result = self.commit_of("x\nvalue q8Zx3Lp0Vb7Nw2KcR5tYm9UaJ4sHd6GfE1iO8PzXyWvB\n")
+        self.assertEqual(result["facts"]["secret_hits"], [{"path": "s.txt", "kind": "high_entropy"}])
+        result = self.commit_of("x\npassword = 'hunter2hunter2'\n")
+        self.assertEqual(result["facts"]["secret_hits"], [{"path": "s.txt", "kind": "pattern"}])
+
+    def test_a_secret_decline_logs_the_kinds_without_calling_codex(self):
+        (self.repo / "s.txt").write_text("x\nvalue %s\n" % DIGEST)
+        rule, args, spelling = self.rule_and_args(self.commit_command("s.txt"))
+        config = {"mode": "advise", "model": "m", "effort": "low", "codex_timeout_seconds": 5,
+                  "max_log_bytes": 1048576, "notify": False}
+        verdict = ca.evaluate(rule, args, spelling, str(self.repo), config, path_value=self.path_value,
+                              home=str(self.home))
+        self.assertEqual((verdict["verdict"], verdict["reason"]), ("decline", "failed_checks"))
+        self.assertEqual(verdict["secret_kinds"], ["long_hex"])
+        self.assertNotIn(DIGEST, json_dumps(verdict))
 
     def test_collection_has_a_deadline_and_reports_no_verdict(self):
         import time

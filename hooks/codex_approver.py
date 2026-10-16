@@ -493,6 +493,9 @@ def credential_path(path):
 TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
 HEX_RE = re.compile(r"[0-9a-fA-F]+")
 CHECKSUM_CONTEXT = re.compile(r"(?i)sha-?(1|256|384|512)|integrity|checksum|digest|\bhash\b|\bmd5\b|\bgo\.sum\b")
+JOB_ID_RE = re.compile(r"[a-z0-9]+(?:--[a-z0-9]+)*--\d{8}-\d{6}--[0-9a-f]{8}")
+WORDY_SEGMENT_RE = re.compile(r"[A-Za-z_.-]{3,}")
+SEGMENT_MIN = 16
 
 
 def shannon_entropy(token):
@@ -511,15 +514,55 @@ def token_is_suspect(token):
     return entropy >= 4.0 if len(token) >= 40 else (mixed and entropy >= 3.8)
 
 
-def has_high_entropy_token(text):
-    """True when a line holds a random-looking token. Lines that talk about hashes and checksums
-    (lock files, integrity fields) are skipped, since those legitimately carry long digests."""
+def path_segments(token):
+    """The segments of a path-like token, else None. Path-like: at least two segments, only path characters,
+    and at least half of the segments plain words, which random secrets almost never are."""
+    segments = [part for part in token.split("/") if part]
+    if len(segments) < 2 or "/" not in token or "=" in token or "+" in token:
+        return None
+    wordy = sum(1 for part in segments if WORDY_SEGMENT_RE.fullmatch(part))
+    return segments if wordy * 2 >= len(segments) else None
+
+
+def token_kind(token):
+    """The suspect kind of one token, or None. Path-like tokens are judged segment by segment."""
+    if JOB_ID_RE.fullmatch(token):
+        return None
+    segments = path_segments(token)
+    if segments is not None:
+        if any(len(part) >= SEGMENT_MIN and token_is_suspect(part) for part in segments):
+            return "long_hex" if any(HEX_RE.fullmatch(p) and len(p) >= 32 for p in segments) else "high_entropy"
+        return None
+    if not token_is_suspect(token):
+        return None
+    return "long_hex" if HEX_RE.fullmatch(token) else "high_entropy"
+
+
+def entropy_kind(text):
+    """The first random-looking kind in the text, else None. A line that talks about hashes and checksums
+    (lock files, integrity fields) is skipped, since those legitimately carry long digests; a bare hex digest
+    is also skipped when the line before it carries that context (a wrapped sentence)."""
+    previous = ""
     for line in text.splitlines():
-        if CHECKSUM_CONTEXT.search(line):
+        marker = line[:1] if line[:1] in "+- " else ""
+        body = line[1:] if marker else line
+        context_here = bool(CHECKSUM_CONTEXT.search(line))
+        context_before = bool(CHECKSUM_CONTEXT.search(previous))
+        previous = line
+        if context_here:
             continue
-        if any(token_is_suspect(m.group()) for m in TOKEN_RE.finditer(line)):
-            return True
-    return False
+        for match in TOKEN_RE.finditer(body):
+            kind = token_kind(match.group())
+            if kind is None:
+                continue
+            if kind == "long_hex" and context_before and HEX_RE.fullmatch(match.group()):
+                continue
+            return kind
+    return None
+
+
+def has_high_entropy_token(text):
+    return entropy_kind(text) is not None
 
 
 def decoded_variants(text):
@@ -528,13 +571,19 @@ def decoded_variants(text):
     return urllib.parse.unquote(unescaped)
 
 
-def has_secret(text):
-    """True when the text matches any secret shape, on the text itself and with each line's
-    leading diff marker removed (so a value split across lines is seen whole)."""
+def secret_kind(text):
+    """The kind of the first secret shape in the text ("pattern", "long_hex", "high_entropy"), else None. Patterns
+    run on the text itself and with each line's leading diff marker removed (so a value split across lines is
+    seen whole)."""
     plain = "\n".join(line[1:] if line[:1] in "+- " else line for line in text.splitlines())
     decoded = decoded_variants(text)
-    return (any(pattern.search(candidate) for pattern in SECRET_PATTERNS for candidate in (text, plain, decoded))
-            or has_high_entropy_token(text) or has_high_entropy_token(decoded))
+    if any(pattern.search(candidate) for pattern in SECRET_PATTERNS for candidate in (text, plain, decoded)):
+        return "pattern"
+    return entropy_kind(text) or entropy_kind(decoded)
+
+
+def has_secret(text):
+    return secret_kind(text) is not None
 
 
 def git_bytes(helper, root, argv, timeout=10):
@@ -710,8 +759,9 @@ def collect_commit(ctx):
         helper.message_paragraphs(args["--subject"], args["--body"], args["--trailer"])
     except (ValueError, RuntimeError) as exc:
         facts["message_error"] = str(exc)[:200]
-    if has_secret("\n".join([args["--subject"], args["--body"] or "", *args["--trailer"]])):
-        facts["secret_hits"].append({"path": "<message>"})
+    kind = secret_kind("\n".join([args["--subject"], args["--body"] or "", *args["--trailer"]]))
+    if kind:
+        facts["secret_hits"].append({"path": "<message>", "kind": kind})
     try:
         paths = helper.validate_paths(root, args["paths"])
     except (ValueError, RuntimeError, OSError) as exc:
@@ -725,8 +775,9 @@ def collect_commit(ctx):
         facts["binary"] |= change["binary"]
         if change["status"] == "not_regular":
             facts["non_regular"].append(path)
-        if has_secret(change["diff"]):
-            facts["secret_hits"].append({"path": path})
+        kind = secret_kind(change["diff"])
+        if kind:
+            facts["secret_hits"].append({"path": path, "kind": kind})
             change["diff"] = "<withheld: secret-looking content>"
         facts["changes"].append(change)
     facts["paths"] = paths
@@ -1028,7 +1079,9 @@ def evaluate(rule, args, spelling, cwd, config, path_value=None, home=None):
         return {"verdict": "no_verdict", "reason": "collector_error:" + exc.__class__.__name__, "failed": []}
     digest = hashlib.sha256(canonical_facts(result["facts"]).encode("ascii")).hexdigest() if result["facts"] else None
     if result["failed"]:
-        return {"verdict": "decline", "reason": "failed_checks", "failed": result["failed"], "facts_sha256": digest}
+        kinds = sorted({hit["kind"] for hit in (result["facts"] or {}).get("secret_hits", []) if hit.get("kind")})
+        return {"verdict": "decline", "reason": "failed_checks", "failed": result["failed"], "facts_sha256": digest,
+                "secret_kinds": kinds or None}
     try:
         verdict = review_with_codex(rule, result["facts"], list(result["checks"]), config, path_value, cwd)
     except Exception as exc:  # noqa: BLE001 - a review failure means no decision
@@ -1245,7 +1298,7 @@ def process(raw):
         "failed_checks": verdict["failed"], "mode": config["mode"], "command_sha256": command_digest(command),
         "session_id": safe_id(event.get("session_id")),
     }
-    for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256"):
+    for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256", "secret_kinds"):
         if verdict.get(key) is not None:
             entry[key] = verdict[key]
     append_log(TOOL_HOME / "log" / "verdicts.jsonl", entry, config["max_log_bytes"])
