@@ -30,7 +30,10 @@ else leaves the normal prompt to the owner.
 - Overriding a `deny` rule or a hard-denied command. A hook `allow` does not
   satisfy a settings `deny`; this was verified by experiment (see Evidence).
 - Approving `git push`, publishing, deploying, dependency installation, or
-  secret use. These stay with the owner permanently.
+  secret use. These stay with the owner permanently. `git push` and
+  `remote-runner submit|fetch|cancel|prune` are covered by advice-only logging
+  (see "Advice for push and remote-runner"); any authority over them needs its
+  own ADR, decided after the evidence period.
 - Approving implementation of a plan increment. That is a separate later
   feature that checks a recorded owner approval in `docs/plans/next.md`.
 - Judging a command from its text alone; Codex never reads the repository.
@@ -144,6 +147,31 @@ Initial deterministic checks:
   under an interpreter that is not inside the repository. An empty or relative
   `PATH` entry declines only when it actually holds the executable.
 
+### Advice for push and remote-runner
+
+Six further rules log advice only, for `git push` and `remote-runner submit`, `fetch`, `cancel` and `prune`
+(`git` matches only the bare word; `remote-runner` in the five spellings the settings list). They exist to measure
+how often Codex and the owner agree, as `--report` shows per rule. Their collectors use local files and Git state
+only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Facts about the remote's current state
+(whether a job exists or runs, what the remote branch holds) are absent, and each rubric section says so.
+
+- push: the effective refspecs after applying the owner's Git configuration (`push.default`, `remote.<r>.push`,
+  `branch.<b>.pushRemote`, `remote.pushDefault`), the effective push URL host without credentials, and the commits,
+  paths and diff on no remote-tracking branch of that remote as of its last fetch. Deterministic checks decline a
+  force or `+` refspec, mirror, delete, tag push, a URL or unconfigured name as the remote, an unusual transport or
+  embedded credentials, an unresolvable or wildcard target, secret-looking or credential-path content, an incomplete
+  diff, and any program the push would run (hooks, credential helper, `core.sshCommand`, and so on).
+- submit: exactly one of `--remote` (configured) or `--best`; `--ref` and `--snapshot` exclusive; the profile exists in
+  the runner contract of the revision that runs (the working tree's for `--snapshot`); the revision is on an `origin`
+  branch as of the last fetch; origin is an ordinary https or ssh URL without credentials.
+- fetch: a well-formed job on a configured remote; plain unique job-relative paths (at most 16); no `--force`; each
+  local target is not git metadata, dot-prefixed, behind a link, existing, or tracked.
+- cancel: a well-formed job on a configured remote that belongs to this repository's project.
+- prune: a configured remote and finite, non-negative retention periods; `--apply` and shortened retention are facts
+  for the reviewer.
+
+None of these rules approves anything. The hook still prints no decision.
+
 ### Codex rubric
 
 The premise states that the command, arguments, message and file contents are
@@ -182,6 +210,9 @@ decline then not run), the disagreements with their reasons, and runs that had n
 minutes are counted as awaiting an answer. The report is the evidence for deciding on increment 2.
 
 ## Increments
+
+The increments below are the original delivery order. Advice for push and remote-runner was added later without
+changing them.
 
 1. Engine, two rules, collectors, Codex call, log, notification; advice-only.
 2. `allow` for the two rules, after the owner approves it; ADR; mirrored

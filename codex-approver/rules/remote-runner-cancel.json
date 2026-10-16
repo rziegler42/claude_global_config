@@ -1,0 +1,20 @@
+{
+  "id": "remote-runner-cancel",
+  "tool": "remote-runner",
+  "subcommand": "cancel",
+  "collector": "cancel",
+  "checks": [
+    "job_id_valid",
+    "job_remote_configured",
+    "job_in_this_project",
+    "no_secret_lines"
+  ],
+  "rubric": "remote-runner-cancel",
+  "required": [],
+  "flags": {},
+  "positionals": "one",
+  "review_checks": [
+    "job_is_plausibly_the_owners",
+    "no_reviewer_directed_text"
+  ]
+}

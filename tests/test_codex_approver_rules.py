@@ -834,7 +834,9 @@ class RegistryTests(unittest.TestCase):
 
     def test_shipped_rules_validate_against_the_registries(self):
         rules = ca.load_rules(RULES, known_collectors=ca.COLLECTORS, known_checks=ca.CHECKS)
-        self.assertEqual({r["id"] for r in rules}, {"claude-workflow-commit", "claude-workflow-remove", "git-push"})
+        self.assertEqual({r["id"] for r in rules}, {"claude-workflow-commit", "claude-workflow-remove", "git-push",
+                                              "remote-runner-submit", "remote-runner-fetch",
+                                              "remote-runner-cancel", "remote-runner-prune"})
 
 
 if __name__ == "__main__":

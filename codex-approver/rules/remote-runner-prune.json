@@ -1,0 +1,26 @@
+{
+  "id": "remote-runner-prune",
+  "tool": "remote-runner",
+  "subcommand": "prune",
+  "collector": "prune",
+  "checks": [
+    "prune_remote_configured",
+    "retention_valid",
+    "no_secret_lines"
+  ],
+  "rubric": "remote-runner-prune",
+  "required": [
+    "--remote"
+  ],
+  "flags": {
+    "--remote": "value",
+    "--success-days": "value",
+    "--failure-days": "value",
+    "--apply": "bool"
+  },
+  "positionals": "none",
+  "review_checks": [
+    "retention_is_not_shortened",
+    "no_reviewer_directed_text"
+  ]
+}

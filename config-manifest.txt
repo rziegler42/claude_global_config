@@ -50,4 +50,8 @@ codex-approver/verdict.schema.json
 codex-approver/rules/claude-workflow-commit.json
 codex-approver/rules/claude-workflow-remove.json
 codex-approver/rules/git-push.json
+codex-approver/rules/remote-runner-cancel.json
+codex-approver/rules/remote-runner-fetch.json
+codex-approver/rules/remote-runner-prune.json
+codex-approver/rules/remote-runner-submit.json
 skills/second-opinion/SKILL.md

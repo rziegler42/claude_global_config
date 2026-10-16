@@ -57,6 +57,12 @@ in `codex-approver/`.
 - **A `PreToolUse` hook.** Fires on every call in every mode and costs a check
   per call, while `PermissionRequest` sees exactly the prompted actions.
   Rejected.
+- **Advice for more commands, still no authority.** `git push` and
+  `remote-runner submit|fetch|cancel|prune` have advice-only rules, so the log
+  and `--report` can show whether Codex and the owner agree before anyone
+  considers delegating them. Their collectors use local facts only (no SSH or
+  network), and the spec's earlier "push stays with the owner permanently" is
+  amended to "advice-only logging; any authority needs a separate ADR".
 - **Project-level rules that widen trust.** A repository's own file is
   attacker-controlled. Deferred to a user-side registry that pins a file hash.
 
@@ -83,12 +89,18 @@ in `codex-approver/`.
   `--report` can compare each verdict with what the owner did. They add no decision power.
 - Fact collection has a 12 s deadline and bounded Git calls, so a hostile
   repository costs the advice, not a hang.
+- For push and remote-runner the facts are partial by design: the remote is
+  never contacted, so "ahead of remote" means ahead of the last fetch and job
+  state is unknown. Agreement measured on these rules says less than for
+  commit and remove.
 - Behavior was observed on macOS and Claude Code 2.1.301 only.
 
 ## Verification
 
 `tests/test_codex_approver_engine.py`, `tests/test_codex_approver_rules.py`,
-`tests/test_codex_approver_codex.py` (a fake Codex) and
+`tests/test_codex_approver_codex.py` (a fake Codex),
+`tests/test_codex_approver_tools.py`, `tests/test_codex_approver_push.py`,
+`tests/test_codex_approver_runner.py` and
 `tests/test_codex_approver_wiring.py`, plus a live check of the rubric with the
 real Codex on seven hand-built cases. The review record is in
 `docs/plans/next.md` until archived.

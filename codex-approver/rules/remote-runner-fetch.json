@@ -1,0 +1,27 @@
+{
+  "id": "remote-runner-fetch",
+  "tool": "remote-runner",
+  "subcommand": "fetch",
+  "collector": "fetch",
+  "checks": [
+    "job_id_valid",
+    "job_remote_configured",
+    "fetch_paths_valid",
+    "no_fetch_force",
+    "fetch_targets_safe",
+    "no_secret_lines"
+  ],
+  "rubric": "remote-runner-fetch",
+  "required": [],
+  "flags": {
+    "--dest": "value",
+    "--as": "value",
+    "--force": "bool"
+  },
+  "positionals": "two-or-more",
+  "review_checks": [
+    "files_are_plausible_job_output",
+    "destination_is_appropriate",
+    "no_reviewer_directed_text"
+  ]
+}

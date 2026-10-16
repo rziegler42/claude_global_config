@@ -148,6 +148,12 @@ section, `Bash(git push:*)` outcome hooks, manifest entry and per-rule
 submit|fetch|cancel|prune`), the spec and ADR 0004 text and the non-goal
 amendment remain.
 
+Slice 2 done in the working tree: four `remote-runner-*` rules with
+collectors, checks, rubric sections, 20 outcome-hook patterns per event,
+manifest entries, spec and ADR text (non-goal amended), and 27 runner tests.
+Not yet done: security review (D) and `~/.claude` sync (D); sync the hook
+before the rule files.
+
 ### Increment D — Review and mirror
 
 Dependencies: C

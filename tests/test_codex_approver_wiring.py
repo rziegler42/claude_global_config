@@ -42,6 +42,10 @@ class SettingsWiringTests(unittest.TestCase):
                      "python3 ~/.claude/bin/claude-workflow", "python3 -B ~/.claude/bin/claude-workflow")
         expected = {"Bash(%s %s:*)" % (spelling, sub) for spelling in spellings for sub in ("commit", "remove")}
         expected.add("Bash(git push:*)")
+        runner = ("remote-runner", "~/.claude/bin/remote-runner", "~/.local/bin/remote-runner",
+                  "python3 ~/.claude/bin/remote-runner", "python3 -B ~/.claude/bin/remote-runner")
+        expected |= {"Bash(%s %s:*)" % (spelling, sub) for spelling in runner
+                     for sub in ("submit", "fetch", "cancel", "prune")}
         asked = {rule for rule in settings()["permissions"]["ask"] if rule in expected}
         self.assertEqual(asked, expected, "the filters must be the same patterns the ask rules use")
         for event in ("PostToolUse", "PostToolUseFailure"):

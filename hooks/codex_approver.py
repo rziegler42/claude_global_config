@@ -1139,7 +1139,242 @@ def collect_push(ctx):
     return facts
 
 
-COLLECTORS = {"commit": collect_commit, "remove": collect_remove, "push": collect_push}
+# -- remote-runner facts (local only: no SSH, no `remote-runner status`) ------------------
+
+RUNNER_JOB_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,200}")
+PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+FETCH_MAX_FILES = 16
+PROFILE_COMMAND_CAP = 1000
+CONTRACT_PATH = ".claude/remote-runner.toml"
+REQUIREMENT_KEYS = ("os", "arch", "min_memory_gib", "min_cpu_cores", "labels")
+RETENTION_DEFAULTS = {"--success-days": 7.0, "--failure-days": 30.0}
+
+
+def runner_remotes(home):
+    """Names of the remotes in the owner's remotes file, or None when it cannot be read."""
+    import tomllib
+    for relative in (".claude/remotes.toml", ".config/remote-runner/remotes.toml"):
+        path = os.path.join(home, relative)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(READ_CAP + 1)
+            table = tomllib.loads(data.decode("utf-8")).get("remotes") if len(data) <= READ_CAP else None
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        return sorted(table) if isinstance(table, dict) else None
+    return None
+
+
+def job_parts(job):
+    """(remote, project) from a job ID of the form remote--project--stamp--suffix, else (None, None)."""
+    if not RUNNER_JOB_RE.fullmatch(job) or "--" not in job:
+        return None, None
+    pieces = job.split("--")
+    return pieces[0], (pieces[1] if len(pieces) > 1 else None)
+
+
+def read_contract(helper, root, commit):
+    """The project runner contract as {project, profiles, error}; from `commit`, or the working tree if None."""
+    import tomllib
+    result = {"project": None, "profiles": {}, "error": None}
+    if commit:
+        raw = git_bytes(helper, root, ["show", "%s:%s" % (commit, CONTRACT_PATH)], limit=64 * 1024)
+    else:
+        state, raw = read_worktree_file(root, CONTRACT_PATH)
+        if state != "ok" or has_symlinked_directory(root, CONTRACT_PATH):
+            raw = None
+    if raw is None or len(raw) > 64 * 1024:
+        result["error"] = "contract_missing_or_unreadable"
+        return result
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        result["error"] = "contract_invalid"
+        return result
+    project, profiles = data.get("project"), data.get("profiles")
+    if isinstance(project, dict) and isinstance(project.get("id"), str):
+        result["project"] = project["id"][:64]
+    if isinstance(profiles, dict):
+        for name, profile in list(profiles.items())[:30]:
+            if isinstance(profile, dict) and isinstance(profile.get("command"), str) and PROFILE_NAME_RE.fullmatch(name):
+                required = profile.get("requirements") if isinstance(profile.get("requirements"), dict) else {}
+                result["profiles"][name] = {
+                    "command": profile["command"][:PROFILE_COMMAND_CAP],
+                    "requirements": {key: required[key] for key in REQUIREMENT_KEYS if key in required
+                                     and (isinstance(required[key], (str, int, float, bool)) or (
+                                         isinstance(required[key], list) and all(isinstance(x, str) for x in required[key])))}}
+    return result
+
+
+def collect_submit(ctx):
+    helper, root, args = ctx["helper"], ctx["root"], ctx["args"]
+    remotes = runner_remotes(ctx["home"])
+    facts = {"remote": args["--remote"], "best": args["--best"], "snapshot": args["--snapshot"],
+             "ref_argument": args["--ref"], "profile": args["--profile"], "remotes_known": remotes is not None,
+             "remote_configured": None if remotes is None or args["--remote"] is None else args["--remote"] in remotes,
+             "commit": None, "head": None, "commit_is_head": None, "pushed_to_origin": None,
+             "pushed_base": "an origin remote-tracking branch contains the commit, as of the last fetch",
+             "origin": None, "contract": None, "profile_known": False, "profile_details": None,
+             "exec_config": repo_exec_findings(helper, root), "secret_hits": [], "ref_error": None}
+    head = git_bytes(helper, root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+    facts["head"] = head.decode("ascii", "replace").strip() if head else None
+    ref = args["--ref"] or "HEAD"
+    if args["--ref"] is not None and not REF_NAME_RE.fullmatch(ref):
+        facts["ref_error"] = "ref_shape"
+    elif not args["--snapshot"] or args["--ref"] is None:
+        out = git_bytes(helper, root, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"])
+        commit = out.decode("ascii", "replace").strip() if out else ""
+        facts["commit"] = commit if re.fullmatch(r"[0-9a-f]{40,64}", commit) else None
+        facts["ref_error"] = None if facts["commit"] else "ref_unresolved"
+    if facts["commit"] is None and args["--snapshot"] and facts["ref_error"] is None:
+        facts["commit"] = facts["head"]
+    if facts["commit"]:
+        facts["commit_is_head"] = facts["commit"] == facts["head"]
+        found = git_bytes(helper, root, ["for-each-ref", "--contains", facts["commit"], "--count=1",
+                                         "--format=%(refname)", "refs/remotes/origin/"])
+        facts["pushed_to_origin"] = None if found is None else bool(found.strip())
+    url_out = git_bytes(helper, root, ["remote", "get-url", "origin"], user_config=True)
+    if url_out is not None:
+        url = url_out.decode("utf-8", "replace").strip()
+        facts["origin"] = remote_url_info(url)
+        if secret_kind(url) == "pattern":
+            facts["secret_hits"].append({"path": "<origin-url>", "kind": "pattern"})
+    contract = read_contract(helper, root, None if args["--snapshot"] else facts["commit"])
+    facts["contract"] = {"project": contract["project"], "error": contract["error"],
+                         "profiles": sorted(contract["profiles"])}
+    details = contract["profiles"].get(args["--profile"])
+    facts["profile_known"] = details is not None
+    facts["profile_details"] = details
+    kind = secret_kind("\n".join([args["--profile"], ref, (details or {}).get("command", "")]))
+    if kind:
+        facts["secret_hits"].append({"path": "<profile-or-ref>", "kind": kind})
+        if details:
+            facts["profile_details"] = dict(details, command="<withheld: secret-looking content>")
+    return facts
+
+
+def valid_fetch_path(path):
+    return bool(path) and len(path) <= 1024 and not path.startswith(("-", "/")) and not any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path) and all(
+        part not in ("", ".", "..") and len(part.encode("utf-8", "replace")) <= 255 for part in path.split("/"))
+
+
+def fold_name(text):
+    import unicodedata
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def fetch_target_facts(helper, root, cwd, args, parts_list):
+    """For each target: would it be git metadata, dot-prefixed, a link, existing, or git-tracked?"""
+    dest = args["--dest"]
+    base = os.path.realpath(os.path.join(cwd, dest)) if dest is not None else os.path.realpath(str(root))
+    repo = os.path.realpath(str(root))
+    info = {"dest_given": dest is not None, "dest_is_directory": os.path.isdir(base),
+            "dest_inside_repository": base == repo or base.startswith(repo.rstrip(os.sep) + os.sep),
+            "targets": [], "tracked_known": True}
+    listing = git_bytes(helper, root, ["ls-files", "-z"], limit=8 * READ_CAP)
+    if listing is None or len(listing) > 8 * READ_CAP:
+        info["tracked_known"] = False
+        tracked = []
+    else:
+        tracked = [fold_name(item) for item in listing.decode("utf-8", "replace").split("\0") if item]
+    nested_repo = (not info["dest_inside_repository"]
+                   and os.path.lexists(os.path.join(repo_boundary(base), ".git")))
+    prefix = os.path.relpath(base, repo).split(os.sep) if info["dest_inside_repository"] and base != repo else []
+    for parts in parts_list:
+        scope = prefix if info["dest_inside_repository"] else list(Path(base).parts[1:])
+        names = scope + parts
+        target = os.path.join(base, *parts)
+        current, link = base, False
+        for part in parts[:-1]:
+            current = os.path.join(current, part)
+            try:
+                mode = os.lstat(current).st_mode
+            except OSError:
+                break
+            if not stat.S_ISDIR(mode):
+                link = True
+                break
+        exists = os.path.lexists(target)
+        wanted = fold_name("/".join(names)) if info["dest_inside_repository"] else None
+        info["targets"].append({
+            "path": "/".join(parts)[:300], "git_metadata": any(fold_name(n) == ".git" for n in
+                                                              list(Path(base).parts[1:]) + parts),
+            "dot_prefixed": any(n.startswith(".") for n in names), "link_or_non_directory_component": link,
+            "exists": exists,
+            "tracked": (None if nested_repo else False) if wanted is None else any(t == wanted or t.startswith(wanted + "/") for t in tracked)})
+    return info
+
+
+def collect_fetch(ctx):
+    helper, root, args = ctx["helper"], ctx["root"], ctx["args"]
+    remotes = runner_remotes(ctx["home"])
+    job, paths = args["paths"][0], args["paths"][1:]
+    remote, project = job_parts(job)
+    contract = read_contract(helper, root, None)
+    facts = {"job": job[:200], "job_valid": remote is not None, "remote": remote,
+             "remotes_known": remotes is not None, "remote_configured": None if remotes is None or remote is None else remote in remotes,
+             "job_project": project, "project": contract["project"], "paths": [p[:300] for p in paths],
+             "paths_valid": len(paths) <= FETCH_MAX_FILES and all(valid_fetch_path(p) for p in paths),
+             "paths_unique": len({fold_name(p) for p in paths}) == len(paths),
+             "rename_to": args["--as"], "rename_valid": args["--as"] is None or (len(paths) == 1 and bool(args["--as"])
+                                                                                  and "/" not in args["--as"]
+                                                                                  and not args["--as"].startswith(("-", "."))
+                                                                                  and args["--as"] not in (".", "..")),
+             "force": args["--force"], "destination": None, "secret_hits": []}
+    if facts["paths_valid"]:
+        parts_list = [p.split("/") for p in paths]
+        if args["--as"] is not None and facts["rename_valid"]:
+            parts_list = [parts_list[0][:-1] + [args["--as"]]]
+        facts["destination"] = fetch_target_facts(helper, root, ctx["cwd"], args, parts_list)
+    kind = secret_kind("\n".join(paths + [job]))
+    if kind:
+        facts["secret_hits"].append({"path": "<paths>", "kind": kind})
+    return facts
+
+
+def collect_cancel(ctx):
+    helper, root, args = ctx["helper"], ctx["root"], ctx["args"]
+    remotes = runner_remotes(ctx["home"])
+    job = args["paths"][0]
+    remote, project = job_parts(job)
+    contract = read_contract(helper, root, None)
+    return {"job": job[:200], "job_valid": remote is not None, "remote": remote, "job_project": project,
+            "project": contract["project"], "remotes_known": remotes is not None,
+            "remote_configured": None if remotes is None or remote is None else remote in remotes,
+            "job_state": "unknown (not queried: facts are local only)", "secret_hits": []}
+
+
+def parse_days(text, default):
+    if text is None:
+        return default, True
+    try:
+        value = float(text)
+    except ValueError:
+        return None, False
+    return (value, True) if math.isfinite(value) and 0 <= value < 1e6 else (None, False)
+
+
+def collect_prune(ctx):
+    args = ctx["args"]
+    remotes = runner_remotes(ctx["home"])
+    success, success_ok = parse_days(args["--success-days"], RETENTION_DEFAULTS["--success-days"])
+    failure, failure_ok = parse_days(args["--failure-days"], RETENTION_DEFAULTS["--failure-days"])
+    remote = args["--remote"]
+    return {"remote": remote, "remotes_known": remotes is not None,
+            "remote_configured": None if remotes is None else remote in remotes, "apply": args["--apply"],
+            "success_days": success, "failure_days": failure, "retention_valid": success_ok and failure_ok,
+            "default_success_days": RETENTION_DEFAULTS["--success-days"],
+            "default_failure_days": RETENTION_DEFAULTS["--failure-days"],
+            "retention_shortened": bool(success_ok and failure_ok and (
+                success < RETENTION_DEFAULTS["--success-days"] or failure < RETENTION_DEFAULTS["--failure-days"])),
+            "secret_hits": []}
+
+
+COLLECTORS = {"commit": collect_commit, "remove": collect_remove, "push": collect_push,
+              "submit": collect_submit, "fetch": collect_fetch, "cancel": collect_cancel, "prune": collect_prune}
 
 
 # -- deterministic checks --------------------------------------------------------------
@@ -1259,6 +1494,72 @@ def check_outgoing_paths_not_credentials(facts):
     return not bad, "an outgoing commit touches a credential-looking path"
 
 
+def check_remote_selection_valid(facts):
+    one = (facts["remote"] is not None) != bool(facts["best"])
+    configured = facts["best"] or facts["remote_configured"] is True
+    return bool(one and configured), "choose exactly one configured remote or --best"
+
+
+def check_submit_source_valid(facts):
+    if facts["snapshot"] and facts["ref_argument"] is not None:
+        return False, "--ref and --snapshot are exclusive"
+    return facts["ref_error"] is None and facts["commit"] is not None, "the revision could not be resolved locally"
+
+
+def check_profile_defined(facts):
+    return facts["profile_known"], "the profile is not defined by the project runner contract"
+
+
+def check_revision_pushed(facts):
+    revision = facts["head"] if facts["snapshot"] else facts["commit"]
+    return facts["pushed_to_origin"] is True and revision is not None, "the revision is not on an origin branch"
+
+
+def check_origin_url_usable(facts):
+    origin = facts["origin"]
+    ok = bool(origin) and origin["kind"] in ("https", "ssh") and not origin["has_password"] and not (
+        origin["has_userinfo"] and origin["kind"] == "https")
+    return ok, "origin is not an ordinary https or ssh URL without embedded credentials"
+
+
+def check_job_id_valid(facts):
+    return facts["job_valid"], "the job ID is malformed"
+
+
+def check_job_remote_configured(facts):
+    return facts["remote_configured"] is True, "the job's remote is not a configured remote"
+
+
+def check_job_in_this_project(facts):
+    return facts["project"] is not None and facts["job_project"] == facts["project"], "the job belongs to another project"
+
+
+def check_fetch_paths_valid(facts):
+    ok = facts["paths_valid"] and facts["paths_unique"] and facts["rename_valid"]
+    return ok, "the fetch paths are not plain, unique job-relative files"
+
+
+def check_no_fetch_force(facts):
+    return not facts["force"], "--force overwrites existing, tracked or dot-prefixed files"
+
+
+def check_fetch_targets_safe(facts):
+    destination = facts["destination"]
+    if not destination or not destination["dest_is_directory"] or not destination["tracked_known"]:
+        return False, "the destination could not be assessed"
+    bad = [t for t in destination["targets"] if t["git_metadata"] or t["dot_prefixed"]
+           or t["link_or_non_directory_component"] or t["exists"] or t["tracked"] is not False]
+    return not bad, "a target is git metadata, dot-prefixed, existing, tracked or behind a link"
+
+
+def check_prune_remote_configured(facts):
+    return facts["remote_configured"] is True, "the remote is not a configured remote"
+
+
+def check_retention_valid(facts):
+    return facts["retention_valid"], "the retention periods are not finite non-negative numbers"
+
+
 CHECKS = {
     "head_matches": check_head_matches, "staging_state_ok": check_staging_state_ok,
     "paths_valid": check_paths_valid, "message_valid": check_message_valid,
@@ -1270,6 +1571,13 @@ CHECKS = {
     "no_force_push": check_no_force_push, "no_delete_push": check_no_delete_push, "no_tag_push": check_no_tag_push,
     "push_target_known": check_push_target_known, "outgoing_known": check_outgoing_known,
     "outgoing_paths_not_credentials": check_outgoing_paths_not_credentials,
+    "remote_selection_valid": check_remote_selection_valid, "submit_source_valid": check_submit_source_valid,
+    "profile_defined": check_profile_defined, "revision_pushed": check_revision_pushed,
+    "origin_url_usable": check_origin_url_usable, "job_id_valid": check_job_id_valid,
+    "job_remote_configured": check_job_remote_configured, "job_in_this_project": check_job_in_this_project,
+    "fetch_paths_valid": check_fetch_paths_valid, "no_fetch_force": check_no_fetch_force,
+    "fetch_targets_safe": check_fetch_targets_safe, "prune_remote_configured": check_prune_remote_configured,
+    "retention_valid": check_retention_valid,
 }
 
 
@@ -1284,7 +1592,8 @@ def analyze(rule, args, spelling, cwd, path_value=None, home=None):
     helper = load_helper()
     with deadline(COLLECT_DEADLINE):
         root = helper.git_root(Path(cwd))
-        facts = COLLECTORS[rule["collector"]]({"helper": helper, "root": root, "args": args})
+        facts = COLLECTORS[rule["collector"]]({"helper": helper, "root": root, "args": args, "home": home,
+                                               "cwd": cwd})
     for check_id in rule["checks"]:
         function = CHECKS.get(check_id)
         ok, detail = function(facts) if function else (False, "unknown check")
