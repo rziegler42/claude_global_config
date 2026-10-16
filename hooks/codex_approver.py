@@ -34,6 +34,7 @@ import urllib.parse
 HERE = Path(__file__).resolve()
 TOOL_HOME = HERE.parent.parent / "codex-approver"
 INSTALLED_HELPER = HERE.parent.parent / "bin" / "claude-workflow"
+INSTALLED_TOOLS = {"claude-workflow": INSTALLED_HELPER, "remote-runner": HERE.parent.parent / "bin" / "remote-runner"}
 
 # The spellings the settings `ask` rules list for claude-workflow, matched on the raw
 # command text before any tokenizing, so the executable word can never be quoted.
@@ -44,7 +45,17 @@ SPELLINGS = (
     "python3 ~/.claude/bin/claude-workflow",
     "python3 -B ~/.claude/bin/claude-workflow",
 )
-SUPPORTED_TOOLS = ("claude-workflow",)
+# The same five spellings for the owner's other helper, and plain `git` (push only; any flag before the
+# subcommand, a path, or a quoted word fails the raw-text match).
+REMOTE_RUNNER_SPELLINGS = tuple(spelling.replace("claude-workflow", "remote-runner") for spelling in SPELLINGS)
+GIT_SPELLINGS = ("git",)
+SPELLING_TOOL = dict(
+    [(spelling, "claude-workflow") for spelling in SPELLINGS]
+    + [(spelling, "remote-runner") for spelling in REMOTE_RUNNER_SPELLINGS]
+    + [(spelling, "git") for spelling in GIT_SPELLINGS])
+SUPPORTED_TOOLS = ("claude-workflow", "remote-runner", "git")
+# How many positional words a rule accepts: (minimum, maximum or None).
+POSITIONAL_COUNTS = {"paths": (1, None), "none": (0, 0), "one": (1, 1), "up-to-two": (0, 2), "two-or-more": (2, None)}
 VERDICT_WORDS = ("approve", "decline", "no_verdict")
 EFFORTS = ("low", "medium", "high", "xhigh")
 MAX_STDIN = 1_000_000
@@ -53,7 +64,7 @@ MAX_CONFIG_BYTES = 64 * 1024
 BARE = re.compile(r"[A-Za-z0-9_./:=@%+,-]")
 ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 SUBCOMMAND_RE = re.compile(r"[a-z][a-z-]{0,31}")
-FLAG_RE = re.compile(r"--[a-z][a-z-]{0,31}")
+FLAG_RE = re.compile(r"--[a-z][a-z-]{0,31}|-[A-Za-z]")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
 CONFIG_KEYS = {"mode", "model", "effort", "codex_timeout_seconds", "max_log_bytes", "notify"}
 RULE_KEYS = {"id", "tool", "subcommand", "collector", "checks", "rubric", "review_checks", "required",
@@ -73,7 +84,7 @@ class ConfigError(Exception):
 
 def split_command(command):
     """Return (spelling, rest) when the raw command begins with a listed spelling."""
-    for spelling in SPELLINGS:
+    for spelling in SPELLING_TOOL:
         prefix = spelling + " "
         if command.startswith(prefix):
             rest = command[len(prefix):]
@@ -123,12 +134,13 @@ def tokenize(text):
     return tokens
 
 
-def match_rule(tokens, rules):
-    """Return (rule, args) for the first rule whose grammar the tokens satisfy, else None."""
+def match_rule(tokens, rules, tool=None):
+    """Return (rule, args) for the first rule whose grammar the tokens satisfy, else None. With `tool`,
+    only that tool's rules are considered."""
     if not tokens:
         return None
     for rule in rules:
-        if rule["subcommand"] != tokens[0]:
+        if rule["subcommand"] != tokens[0] or (tool is not None and rule["tool"] != tool):
             continue
         args = parse_arguments(tokens[1:], rule)
         if args is not None:
@@ -170,7 +182,8 @@ def parse_arguments(tokens, rule):
     for name in rule["required"]:
         if not args[name]:
             return None
-    if rule["positionals"] == "paths" and not paths:
+    minimum, maximum = POSITIONAL_COUNTS[rule["positionals"]]
+    if len(paths) < minimum or (maximum is not None and len(paths) > maximum):
         return None
     args["paths"] = paths
     return args
@@ -231,8 +244,8 @@ def validate_rule(rule, known_collectors=None, known_checks=None):
         raise ConfigError("rule tool is not supported")
     if not SUBCOMMAND_RE.fullmatch(rule["subcommand"]):
         raise ConfigError("rule subcommand is invalid")
-    if rule["positionals"] != "paths":
-        raise ConfigError("rule positionals must be 'paths'")
+    if rule["positionals"] not in POSITIONAL_COUNTS:
+        raise ConfigError("rule positionals must be one of %s" % sorted(POSITIONAL_COUNTS))
     for key in ("collector", "rubric"):
         if not ID_RE.fullmatch(rule[key]):
             raise ConfigError("rule %s is invalid" % key)
@@ -414,11 +427,16 @@ def find_on_path(name, path_value, cwd):
 
 def resolve_invocation(spelling, path_value, home, cwd, installed=None):
     """Decide whether the command would execute the installed helper under a trusted interpreter."""
-    installed = os.path.realpath(installed or INSTALLED_HELPER)
+    tool = SPELLING_TOOL[spelling]
+    if tool == "git":
+        # Plain git has no installed copy to compare with; it only has to resolve outside the repository.
+        git, why = find_on_path("git", path_value, cwd)
+        return (git is not None), why
+    installed = os.path.realpath(installed or INSTALLED_TOOLS[tool])
     if not os.path.isfile(installed):
         return False, "installed_helper_missing"
-    if spelling == "claude-workflow":
-        helper, why = find_on_path("claude-workflow", path_value, cwd)
+    if spelling == tool:
+        helper, why = find_on_path(tool, path_value, cwd)
     else:
         literal = spelling.split(" ")[-1]
         helper, why = os.path.realpath(os.path.join(home, literal[2:])), None
@@ -1123,7 +1141,7 @@ def match_event(event):
         return None
     config = load_config(TOOL_HOME / "config.json")
     rules = load_rules(TOOL_HOME / "rules", known_collectors=COLLECTORS, known_checks=CHECKS)
-    matched = match_rule(tokens, rules)
+    matched = match_rule(tokens, rules, tool=SPELLING_TOOL[split[0]])
     if matched is None:
         return None
     return command, split[0], config, matched[0], matched[1]
