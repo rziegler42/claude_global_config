@@ -1,7 +1,7 @@
 {
-  "model": "gpt-6.1-sol",
-  "effort_default": "high",
-  "effort_ceiling": "xhigh",
+  "model": "gpt-5.6-luna",
+  "effort_default": "low",
+  "effort_ceiling": "high",
   "rounds_default": 3,
   "rounds_ceiling": 5,
   "timeout_seconds": 600,

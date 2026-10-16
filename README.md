@@ -19,6 +19,9 @@ downloads, synced skills, or other generated and machine-specific state.
   security-reviewer, researcher, committer, and Graphify semantic agents.
 - `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
   reviewer, security-reviewer, and researcher agents (see below).
+- `hooks/codex_approver.py`, `codex-approver/` (`config.json`, `rubric.md`,
+  `verdict.schema.json`, and `rules/`) — the advice-only Codex approver for
+  `claude-workflow commit` and `remove` prompts (see Codex approver).
 - `skills/` — architecture-decision, FreeCAD scripting (FreeCAD 1.1), Graphify
   workflow, security-review, and Verilog formal-verification (SymbiYosys) and
   simulation (Verilator) skills maintained with this configuration.
@@ -210,9 +213,11 @@ the `ask-codex` helper, which is read-only and round-limited:
   (3 rounds by default, never more than 5 per request), when a rejected finding
   is re-raised a second time, or after repeated failures. The plan stays
   `Proposed` until you approve it.
-- Model and effort are explicit in `ask-codex/config.json` (`gpt-6.1-sol` at
-  `high`, rising to `xhigh` when a review struggles to converge). Run
-  `ask-codex models` to see what Codex currently offers.
+- Model and effort are explicit in `ask-codex/config.json` (`gpt-5.6-luna` at
+  `low`, rising to `high` from round 3 or when a review struggles to converge).
+  A plan that is high-stakes can ask for a stronger model per request, for
+  example `--model gpt-6.1-sol --effort high`. Run `ask-codex models` to see
+  what Codex currently offers.
 - `extend`, `reset`, `archive`, and `prune` need your approval; Claude Code
   prompts for each.
 - Review state lives in untracked `.debug/<date>-plan-review/`. Run
@@ -233,6 +238,52 @@ tool-neutral `plan-review` module, which it requires. That module supplies the
 policy (on request only, read-only reviewer, bounded rounds, nothing secret in
 reviewed files, approval is never replaced) and the `## Second opinion` section
 in `docs/plans/next.md`. Only the `codex` module names this helper and skill.
+
+## Codex approver (advice only)
+
+`hooks/codex_approver.py` is a `PermissionRequest` hook registered in
+`settings.json`. Claude Code runs it only when an `ask` rule is about to prompt
+you, in every permission mode. For `claude-workflow commit` and `claude-workflow
+remove --confirm` it collects facts with trusted code, runs fixed checks, asks
+Codex to review what the checks cannot, and records a verdict. In this version
+it never answers the prompt: it prints nothing, so you decide exactly as before.
+It needs Claude Code (the hook event is a Claude Code feature) and the Codex
+CLI signed in with `codex login`; without Codex there is simply no advice.
+
+- **Rules** are JSON files under `codex-approver/rules/`. A command with no rule
+  is ignored. A rule names the exact command grammar, a collector, the
+  deterministic checks, and the semantic checks Codex judges.
+- **Verdicts** are `approve`, `decline` (a check failed, or Codex vetoed) and
+  `no_verdict` (the gate or Codex could not judge). A failed deterministic
+  check declines without calling Codex; a request is sent to Codex only after it
+  passes every check.
+- **Where to look.** Each decision is one line in
+  `~/.claude/codex-approver/log/verdicts.jsonl` (private, size-capped, never
+  mirrored), with the rule, verdict, failed check ids, a short reason, and a hash
+  of the command and facts. A macOS notification reports the verdict; set
+  `"notify": false` in `codex-approver/config.json` to silence it.
+- **Settings.** `codex-approver/config.json` holds the Codex model, effort and
+  timeout. `mode` accepts only `advise`; there is no switch that lets the hook
+  approve.
+- **Disable** by removing the `hooks` entry from `settings.json` and reinstalling.
+- **What it does not do.** It cannot override a `deny` rule, never touches
+  `git push` or anything outside its rules, and judges only the exact helper
+  spellings your `ask` rules list. It declines a binary or oversized change,
+  credential-looking names, secret-looking content (patterns and entropy), a
+  stale `HEAD`, a repository that configures filter drivers, hooks, a signing
+  program or a diff program, and a command that would run something other than
+  the installed helper. The hook is launched by a small `/bin/sh` bootstrap that
+  skips empty and relative `PATH` entries when it picks `python3`.
+
+The facts are gathered without running repository-configured programs (no Git
+diff or status against the working tree, scrubbed Git environment). Codex runs
+read-only from an empty temporary directory and sees only a rubric and one line
+of escaped facts. See `docs/specs/codex-approver.md` and ADR 0004.
+
+If your shell `PATH` contains an empty entry (two adjacent colons, or a leading
+or trailing one), the shell searches the current directory at that position. A
+repository could then supply its own `python3` or `claude-workflow` in its root.
+The approver declines that case; removing the empty entry fixes it at the source.
 
 ## Testing
 

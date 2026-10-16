@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "failed_checks", "reason"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["approve", "decline"]},
+    "failed_checks": {"type": "array", "items": {"type": "string"}},
+    "reason": {"type": "string"}
+  }
+}

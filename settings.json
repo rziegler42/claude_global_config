@@ -160,6 +160,20 @@
     ],
     "defaultMode": "auto"
   },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true
   },

@@ -48,7 +48,7 @@ with a hard bound on rounds and Claude as the only writer of the plan.
 | Output | Structured JSON via `--output-schema` |
 | Disagreement | Claude may reject with a reason; a second re-raise escalates to the owner |
 | Failures | One automatic retry, 10-minute timeout, stop after 2 consecutive failures |
-| Model | `gpt-6.1-sol`, explicit, `high` effort, ceiling `xhigh`; calibration step |
+| Model | `gpt-5.6-luna`, explicit, `low` effort, ceiling `high`; calibration step (changed 2026-10-16, see Model choice) |
 | Names | `ask-codex`, `second-opinion`, `.debug/<date>-plan-review/` |
 
 ## Behavior
@@ -97,7 +97,7 @@ proceed after convergence and records that authorization in the plan.
 
 ### Escalating effort
 
-Effort starts at `high`. It rises to `xhigh` (the ceiling) for the **next**
+Effort starts at `low`. It rises to `high` (the ceiling) for the **next**
 round when either a rejected finding is re-raised once, or the same blocker or
 major finding appears in two consecutive rounds, or the round number reaches 3.
 Once raised it stays raised for that plan's loop. The report states when and
@@ -248,7 +248,7 @@ an error, never silently reset.
 
 ### Configuration (`~/.claude/ask-codex/config.json`, tracked)
 
-`model`, `effort_default` (`high`), `effort_ceiling` (`xhigh`),
+`model`, `effort_default` (`low`), `effort_ceiling` (`high`),
 `rounds_default` (3), `rounds_ceiling` (5), `timeout_seconds` (600),
 `retries` (1), `max_consecutive_failures` (2), `prune_retention_days` (14).
 There is no fallback model:
@@ -308,7 +308,7 @@ is suppressed: it is recorded, does not block, and is not counted.
 
 ## Model policy and deprecation protection
 
-- The default is `gpt-6.1-sol` at `high`; the ceiling is `xhigh`. `max` and
+- The default is `gpt-5.6-luna` at `low`; the ceiling is `high`. `xhigh`, `max` and
   `ultra` are never used (`ultra` delegates tasks).
 - Before each run the helper validates the configured model and effort against
   Codex's own catalogue (`~/.codex/models_cache.json`): it must exist, be
@@ -368,10 +368,39 @@ reviewed once by each model at `high` effort, each in its own local clone of
 | Wall time | not captured | 59 s |
 
 The two models agreed. The more expensive tier showed no advantage on this
-sample, so `gpt-6.1-sol` at `high` stays the default. One plan and one round is
+sample, so `gpt-6.1-sol` at `high` stayed the default until 2026-10-16 (see Model choice). One plan and one round is
 a small sample; use `--model gpt-6-astra` per request when a plan is
 high-stakes, and repeat the comparison if reviews start missing problems. The
 review also corrected a real documentation error in the README.
+
+## Model choice (2026-10-16)
+
+The owner asked for the cheapest model and effort that reviews plans adequately, using current Codex credit
+pricing rather than model names. Cost is measured, not assumed: token usage from `codex exec --json` priced
+with OpenAI's published Codex credit rates (Standard speed).
+
+A benchmark of four small toy repositories, each with a spec and a plan carrying six known injected defects
+(24 in total: a spec contradiction, a nonexistent file reference, a wrong or missing verification, an ordering
+error, scope creep or a constraint violation, and an unflagged unsafe action), scored a defect as found when a
+blocker or major finding named it:
+
+| Model, effort | Injected defects found | Credits for 4 reviews |
+|---|---|---|
+| `gpt-5.6-luna` low / medium / high | 23 / 23 / 23 of 24 | 0.53 / 0.53 / 0.77 |
+| `gpt-6.1-sol` low | 23 of 24 | 4.62 |
+| `gpt-6-luna` low / medium / high | 20 / 19 / 21 of 24 | 0.29 each |
+
+`gpt-5.6-luna` matched the stronger model's recall at about one ninth of the cost, and a higher effort found
+nothing more. The default is therefore `gpt-5.6-luna` at `low`, rising to `high` for later rounds.
+
+Limits of this evidence: toy repositories of a few files; one run per configuration; the control (defect-free)
+plans first drew many findings because they had real gaps, which were fixed and re-audited with `gpt-6.1-sol`,
+so the false-alarm gate was never completed; `gpt-6.1-sol` medium and high were not benchmarked; the Codex
+usage limit ended the work. A high-stakes plan should be reviewed with `--model gpt-6.1-sol --effort high`.
+
+Fresh sessions per round are kept. Retaining the Codex session across rounds was not measured, and with this
+default a whole three-round review costs well under one credit, so the possible saving does not justify
+changing a recorded decision.
 
 ## Accepted residual risks
 

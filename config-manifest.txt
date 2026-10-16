@@ -9,6 +9,7 @@ agents/security-reviewer.md
 agents/technical-researcher.md
 agents/workflow-reviewer.md
 hooks/review_agent_guard.py
+hooks/codex_approver.py
 bin/claude-workflow
 bin/remote-runner
 bin/ask-codex
@@ -43,4 +44,9 @@ ask-codex/config.json
 ask-codex/kinds/plan-review/kind.json
 ask-codex/kinds/plan-review/prompt.md
 ask-codex/kinds/plan-review/schema.json
+codex-approver/config.json
+codex-approver/rubric.md
+codex-approver/verdict.schema.json
+codex-approver/rules/claude-workflow-commit.json
+codex-approver/rules/claude-workflow-remove.json
 skills/second-opinion/SKILL.md

@@ -4,3 +4,6 @@ __pycache__/
 
 # Per-machine tamper-evidence key for ask-codex; never commit.
 /ask-codex/.seal-key
+
+# Local verdict log of the Codex approver; never commit.
+/codex-approver/log/
