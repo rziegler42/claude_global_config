@@ -12,6 +12,7 @@
     "no_delete_push",
     "no_tag_push",
     "outgoing_known",
+    "outgoing_trusted",
     "facts_complete",
     "outgoing_paths_not_credentials",
     "no_secret_lines"

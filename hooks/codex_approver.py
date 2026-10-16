@@ -511,6 +511,8 @@ def credential_path(path):
 TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
 HEX_RE = re.compile(r"[0-9a-fA-F]+")
 CHECKSUM_CONTEXT = re.compile(r"(?i)sha-?(1|256|384|512)|integrity|checksum|digest|\bhash\b|\bmd5\b|\bgo\.sum\b")
+INTEGRITY_RE = re.compile(
+    r"sha1-[A-Za-z0-9+/]{27}=|sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}|sha512-[A-Za-z0-9+/]{86}==")
 JOB_ID_RE = re.compile(r"[a-z0-9]+(?:--[a-z0-9]+)*--\d{8}-\d{6}--[0-9a-f]{8}")
 WORDY_SEGMENT_RE = re.compile(r"[A-Za-z_.-]{3,}")
 SEGMENT_MIN = 16
@@ -557,8 +559,8 @@ def token_kind(token):
 
 
 def entropy_kind(text):
-    """The first random-looking kind in the text, else None. A line that talks about hashes and checksums
-    (lock files, integrity fields) is skipped, since those legitimately carry long digests; a bare hex digest
+    """The first random-looking kind in the text, else None. On a line that talks about hashes and checksums
+    only hex digests and `shaN-` integrity values are skipped, since lock files legitimately carry them; a bare hex digest
     is also skipped when the line before it carries that context (a wrapped sentence)."""
     previous = ""
     for line in text.splitlines():
@@ -567,13 +569,14 @@ def entropy_kind(text):
         context_here = bool(CHECKSUM_CONTEXT.search(line))
         context_before = bool(CHECKSUM_CONTEXT.search(previous))
         previous = line
-        if context_here:
-            continue
         for match in TOKEN_RE.finditer(body):
-            kind = token_kind(match.group())
+            token = match.group()
+            kind = token_kind(token)
             if kind is None:
                 continue
-            if kind == "long_hex" and context_before and HEX_RE.fullmatch(match.group()):
+            if context_here and (HEX_RE.fullmatch(token) or INTEGRITY_RE.fullmatch(token)):
+                continue  # a digest or an integrity value on a line that says so
+            if kind == "long_hex" and context_before and HEX_RE.fullmatch(token):
                 continue
             return kind
     return None
@@ -1035,9 +1038,9 @@ def outgoing_facts(helper, root, remote, specs):
     count = git_bytes(helper, root, ["rev-list", "--count", *scope])
     log = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "-n", str(MAX_OUTGOING_COMMITS),
                                    "--format=%H%x1f%B%x1e", *scope], limit=READ_CAP)
-    names = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "--no-renames", "--name-only", "-z", "--format=",
+    names = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "-m", "--no-renames", "--name-only", "-z", "--format=",
                                      "-n", "200", *scope], limit=READ_CAP)
-    patch = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "--no-ext-diff", "--no-textconv", "--no-renames",
+    patch = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "-m", "--no-ext-diff", "--no-textconv", "--no-renames",
                                      "-p", "--format=", "-n", "200", *scope], limit=OUTGOING_DIFF_CAP)
     if None in (count, log, names, patch) or not count.strip().isdigit():
         return result, ""
@@ -1058,6 +1061,25 @@ def outgoing_facts(helper, root, remote, specs):
     result["binary"] = "\0" in text or text.startswith("Binary files ") or "\nBinary files " in text
     result["known"] = True
     return result, text
+
+
+def tracking_provenance(helper, root, remote, specs):
+    """For each target, whether its remote-tracking branch exists and what its latest reflog entry says.
+    Tracking refs live in the (untrusted) repository, so a forged one can hide outgoing commits; a real
+    one was written by a fetch, clone, pull or push, which the reflog message records."""
+    result = []
+    for spec in specs[:MAX_REFSPECS]:
+        dst = spec.get("dst_ref") or ""
+        if not dst.startswith("refs/heads/"):
+            continue
+        ref = "refs/remotes/%s/%s" % (remote, dst[len("refs/heads/"):])
+        oid = git_bytes(helper, root, ["rev-parse", "--verify", "--quiet", ref])
+        log = git_bytes(helper, root, ["reflog", "show", "-n", "1", "--format=%gs", ref], limit=4096)
+        message = (log or b"").decode("utf-8", "replace").strip()[:120]
+        genuine = bool(re.match(r"(fetch|pull|clone|update by push|remote-runner)", message))
+        result.append({"ref_exists": bool(oid), "latest_reflog": message or None,
+                       "looks_written_by_git_transport": genuine})
+    return result
 
 
 def collect_push(ctx):
@@ -1124,6 +1146,8 @@ def collect_push(ctx):
     facts["refspecs"] = specs
     outgoing, text = outgoing_facts(helper, root, remote if facts["remote_configured"] else None, specs)
     facts["outgoing"] = {key: outgoing[key] for key in ("base", "known", "count", "commits")}
+    facts["outgoing"]["tracking_refs"] = tracking_provenance(helper, root, remote, specs) \
+        if facts["remote_configured"] else []
     facts["outgoing_paths"] = outgoing["paths"]
     facts["truncated"], facts["binary"] = outgoing["truncated"] or outgoing["paths_truncated"], outgoing["binary"]
     for item in outgoing["commits"]:
@@ -1131,6 +1155,11 @@ def collect_push(ctx):
         if kind:
             facts["secret_hits"].append({"path": "<message:%s>" % item["sha"], "kind": kind})
             item["message"] = "<withheld: secret-looking content>"
+    names = [facts["branch"] or "", facts["remote"] or "", *facts["config"]["remote_push"],
+             *[spec["raw"] for spec in specs], *outgoing["paths"],
+             *[item["latest_reflog"] or "" for item in facts["outgoing"]["tracking_refs"]]]
+    if secret_kind("\n".join(names)) == "pattern":  # entropy would flag ordinary hashed fixture directories
+        facts["secret_hits"].append({"path": "<names>", "kind": "pattern"})
     kind = secret_kind(text)
     if kind:
         facts["secret_hits"].append({"path": "<outgoing diff>", "kind": kind})
@@ -1271,7 +1300,7 @@ def fetch_target_facts(helper, root, cwd, args, parts_list):
     dest = args["--dest"]
     base = os.path.realpath(os.path.join(cwd, dest)) if dest is not None else os.path.realpath(str(root))
     repo = os.path.realpath(str(root))
-    info = {"dest_given": dest is not None, "dest_is_directory": os.path.isdir(base),
+    info = {"dest_given": dest is not None, "dest_is_directory": os.path.isdir(base) and not (dest or "").startswith("~"),
             "dest_inside_repository": base == repo or base.startswith(repo.rstrip(os.sep) + os.sep),
             "targets": [], "tracked_known": True}
     listing = git_bytes(helper, root, ["ls-files", "-z"], limit=8 * READ_CAP)
@@ -1489,6 +1518,16 @@ def check_outgoing_known(facts):
     return bool(facts["outgoing"] and facts["outgoing"]["known"]), "the outgoing commits could not be listed"
 
 
+def check_outgoing_trusted(facts):
+    """Nothing to push, or a tracking branch git did not visibly write, is how a forged tracking ref hides
+    commits; the repository controls those refs and their reflogs, so neither is accepted as evidence."""
+    outgoing = facts["outgoing"] or {}
+    if not outgoing.get("count"):
+        return False, "no outgoing commits, or the remote-tracking state cannot be trusted"
+    untrusted = [t for t in outgoing.get("tracking_refs", []) if t["ref_exists"] and not t["looks_written_by_git_transport"]]
+    return not untrusted, "a remote-tracking branch does not look written by git"
+
+
 def check_outgoing_paths_not_credentials(facts):
     bad = [path for path in facts["outgoing_paths"] if credential_path(path)]
     return not bad, "an outgoing commit touches a credential-looking path"
@@ -1547,6 +1586,8 @@ def check_fetch_targets_safe(facts):
     destination = facts["destination"]
     if not destination or not destination["dest_is_directory"] or not destination["tracked_known"]:
         return False, "the destination could not be assessed"
+    if not destination["dest_inside_repository"]:
+        return False, "the destination is outside the repository"
     bad = [t for t in destination["targets"] if t["git_metadata"] or t["dot_prefixed"]
            or t["link_or_non_directory_component"] or t["exists"] or t["tracked"] is not False]
     return not bad, "a target is git metadata, dot-prefixed, existing, tracked or behind a link"
@@ -1569,7 +1610,7 @@ CHECKS = {
     "preview_matches_arguments": check_preview_matches_arguments, "no_git_metadata": check_no_git_metadata,
     "remote_is_configured": check_remote_is_configured, "remote_transport_safe": check_remote_transport_safe,
     "no_force_push": check_no_force_push, "no_delete_push": check_no_delete_push, "no_tag_push": check_no_tag_push,
-    "push_target_known": check_push_target_known, "outgoing_known": check_outgoing_known,
+    "push_target_known": check_push_target_known, "outgoing_known": check_outgoing_known, "outgoing_trusted": check_outgoing_trusted,
     "outgoing_paths_not_credentials": check_outgoing_paths_not_credentials,
     "remote_selection_valid": check_remote_selection_valid, "submit_source_valid": check_submit_source_valid,
     "profile_defined": check_profile_defined, "revision_pushed": check_revision_pushed,

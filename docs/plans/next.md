@@ -166,6 +166,24 @@ Affected areas: whole change set
 
 Completion: review clean; owner-observed log rows for each shape.
 
+Review (2026-10-16, `security-reviewer` agent plus one bypass round): no Critical
+or High finding; hostile repository configuration executed nothing during
+collection (tested with recording stubs). Fixed with regression tests: merge
+commits hid paths and secrets from the push scan (`-m`); forged remote-tracking
+refs hid outgoing commits (new `tracking_refs` fact and an `outgoing_trusted`
+check that also declines an empty outgoing set); `--dest '~'` was judged
+differently from the real tool; a fetch destination outside the repository now
+declines; a checksum word no longer exempts a whole line (only hex digests and
+exact-length `shaN-` integrity values); names and paths in push facts are
+scanned for secret patterns. Accepted residual risk: slash-containing and
+40-hex secrets can evade the entropy heuristic (patterns remain the floor); a
+repository can claim any project id for the cancel check; the tracking-ref
+reflog is forgeable, so that fact is advisory; `git config`/`remote` reads are
+bounded only by the 12 s deadline. Not run: huge-history and FIFO cases,
+hostile global config, malformed rule JSON, settings `if` diff against `ask`.
+Still to do: sync to `~/.claude` (hook file first, then rules, rubric,
+settings, manifest) and the owner's live check.
+
 ## Verification
 
 - Repository test suite (`python3 -m unittest` / the commands the repo

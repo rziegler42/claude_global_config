@@ -235,6 +235,38 @@ class OutgoingContentTests(PushCase):
         self.assertFails(self.analyze("git push origin main"), "facts_complete")
 
 
+class ReviewRegressionTests(PushCase):
+    def test_a_merge_commit_cannot_hide_a_credential_file_or_secret(self):
+        self.git("switch", "-q", "-c", "side")
+        self.commit_file("s.txt", "side\n", "Side")
+        self.git("switch", "-q", "main")
+        self.commit_file("m.txt", "main\n", "Main")
+        self.git("merge", "-q", "--no-ff", "--no-commit", "side")
+        (self.repo / ".env").write_text("API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123\n")
+        self.git("add", ".env")
+        self.git("commit", "-q", "-m", "Merge side")
+        result = self.analyze("git push origin main")
+        self.assertIn(".env", result["facts"]["outgoing_paths"])
+        self.assertFails(result, "outgoing_paths_not_credentials")
+
+    def test_forged_tracking_refs_are_reported_as_not_git_written(self):
+        self.commit_file("c.txt", "see\n", "Add c")
+        honest = self.facts("git push origin main")["outgoing"]["tracking_refs"][0]
+        self.assertTrue(honest["looks_written_by_git_transport"], honest)
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        facts = self.facts("git push origin main")
+        self.assertEqual(facts["outgoing"]["count"], 0)
+        forged = facts["outgoing"]["tracking_refs"][0]
+        self.assertEqual((forged["ref_exists"], forged["looks_written_by_git_transport"]), (True, False))
+        self.assertFails(self.analyze("git push origin main"), "outgoing_trusted")
+        self.git("update-ref", "-m", "fetch origin: fast-forward", "refs/remotes/origin/main", "HEAD")
+        self.assertFails(self.analyze("git push origin main"), "outgoing_trusted")  # nothing outgoing either way
+
+    def test_a_push_of_new_commits_to_a_genuine_tracking_branch_is_trusted(self):
+        self.commit_file("c.txt", "see\n", "Add c")
+        self.assertEqual(self.analyze("git push origin main")["failed"], [])
+
+
 class GitInvocationTests(PushCase):
     def test_log_never_runs_signature_or_diff_programs(self):
         self.commit_file("c.txt", "see\n", "Add c")
@@ -249,10 +281,11 @@ class GitInvocationTests(PushCase):
             self.analyze("git push origin main")
         logs = [argv for argv in calls if argv[0] == "log"]
         self.assertEqual(len(logs), 3)
+        self.assertTrue(all("-m" in argv for argv in logs if "-p" in argv or "--name-only" in argv))
         for argv in logs:
             self.assertIn("--no-show-signature", argv)
         self.assertTrue(all("--no-ext-diff" in argv and "--no-textconv" in argv for argv in logs if "-p" in argv))
-        self.assertTrue(all(argv[0] in ("log", "rev-list", "config", "symbolic-ref", "remote", "rev-parse")
+        self.assertTrue(all(argv[0] in ("log", "rev-list", "config", "symbolic-ref", "remote", "rev-parse", "reflog")
                             for argv in calls), calls)
         self.assertTrue(all(not any(item.startswith(("http", "ssh:", "file:")) for item in argv) for argv in calls))
 

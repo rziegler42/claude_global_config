@@ -775,6 +775,17 @@ class EntropyAndDeadlineTests(RuleCase):
         self.assertEqual(verdict["reason"], "collector_error:CollectionDeadline", verdict)
 
 
+class ChecksumContextTests(unittest.TestCase):
+    def test_a_checksum_word_exempts_only_digests_and_integrity_values_on_its_line(self):
+        random_token = "Xk9fQ2lMb3ZlU3RyYW5nZVNlY3JldEtleTEyMzQ1Njc4OTBhYmNk"
+        self.assertIsNone(ca.secret_kind('+ "integrity": "sha512-%s=="' % ("Ab1+" * 21 + "Ab")))
+        self.assertIsNone(ca.secret_kind("+ sha256 " + "a1" * 32))
+        self.assertEqual(ca.secret_kind("+ the sha256 of this is " + random_token), "high_entropy")
+        self.assertEqual(ca.secret_kind("checksum: " + random_token), "high_entropy")
+        self.assertEqual(ca.secret_kind("+k = sha256-Zk3Qp9Lm2Xv8Bn5Rt7Yw1Cd4Fg6Hj0KsAbCdEfGhIjKl"), "high_entropy")
+        self.assertIsNone(ca.secret_kind('"integrity": "sha256-' + "Ab1+" * 10 + 'Ab1="'))
+
+
 class RemoveFactsTests(RuleCase):
     def remove(self, *paths, recursive=False):
         command = "claude-workflow remove %s--confirm %s" % ("--recursive " if recursive else "", " ".join(paths))

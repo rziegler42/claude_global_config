@@ -215,13 +215,20 @@ class FetchTests(RunnerCase):
         outside = Path(self.tmp.name) / "results"
         outside.mkdir()
         result = self.fetch("--dest", str(outside), JOB, "r.log")
-        self.assertEqual(result["failed"], [], result)
+        self.assertEqual(result["failed"], ["fetch_targets_safe"], result)
         self.assertFalse(result["facts"]["destination"]["dest_inside_repository"])
         self.assertFails(self.fetch("--dest", str(Path(self.tmp.name) / "nodir"), JOB, "r.log"), "fetch_targets_safe")
         (outside / "sub").mkdir()
         (outside / ".git").mkdir()
         self.assertFails(self.fetch("--dest", str(outside / "sub"), JOB, "r.log"), "fetch_targets_safe")
         self.assertFails(self.fetch("--dest", str(outside / ".git"), JOB, "r.log"), "fetch_targets_safe")
+
+
+    def test_a_tilde_destination_is_not_assessed_as_a_repository_directory(self):
+        (self.repo / "~").mkdir()
+        result = self.fetch("--dest", "'~'", JOB, "out.txt")
+        self.assertFails(result, "fetch_targets_safe")
+        self.assertFalse(result["facts"]["destination"]["dest_is_directory"])
 
 
 class CancelAndPruneTests(RunnerCase):
