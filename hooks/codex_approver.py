@@ -1037,39 +1037,213 @@ def evaluate(rule, args, spelling, cwd, config, path_value=None, home=None):
     return dict(verdict, facts_sha256=digest)
 
 
-def process(raw):
-    if len(raw) > MAX_STDIN:
-        return
-    event = json.loads(raw)
+# -- outcomes: did the command run after the prompt? -----------------------------------------------
+
+POST_EVENTS = ("PostToolUse", "PostToolUseFailure")
+ID_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+EXIT_CODE = re.compile(r"Exit code (-?\d{1,3})")
+PAIR_WINDOW = 1800  # seconds the owner may take to answer a prompt before it counts as unanswered
+REPORT_DECISIONS = ("approve", "decline", "no_verdict")
+
+
+def safe_id(value):
+    return value if isinstance(value, str) and ID_VALUE.fullmatch(value) else None
+
+
+def command_digest(command):
+    return hashlib.sha256(command.encode("utf-8", "replace")).hexdigest()
+
+
+def match_event(event):
+    """Return (command, spelling, config, rule, args) for a Bash event whose command a rule covers, else None."""
     if not isinstance(event, dict) or event.get("tool_name") != "Bash":
-        return
+        return None
     tool_input = event.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or not command or len(command) > MAX_COMMAND:
-        return
+        return None
     split = split_command(command)
     if split is None:
-        return
+        return None
     tokens = tokenize(split[1])
     if tokens is None:
-        return
+        return None
     config = load_config(TOOL_HOME / "config.json")
     rules = load_rules(TOOL_HOME / "rules", known_collectors=COLLECTORS, known_checks=CHECKS)
     matched = match_rule(tokens, rules)
     if matched is None:
+        return None
+    return command, split[0], config, matched[0], matched[1]
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def process_outcome(event):
+    """Record that a covered command ran (PostToolUse) or ran and failed (PostToolUseFailure).
+
+    Only whether it ran and its exit code are kept. The tool's output is never read into the log.
+    """
+    matched = match_event(event)
+    if matched is None:
         return
-    rule, args = matched
+    command, _spelling, config, rule, _args = matched
+    failed = event.get("hook_event_name") == "PostToolUseFailure"
+    error = event.get("error") if isinstance(event.get("error"), str) else ""
+    code = EXIT_CODE.match(error)
+    duration = event.get("duration_ms")
+    entry = {
+        "ts": now_iso(), "rule": rule["id"], "outcome": "ran_failed" if failed else "ran",
+        "exit_code": int(code.group(1)) if code else (None if failed else 0),
+        "command_sha256": command_digest(command), "session_id": safe_id(event.get("session_id")),
+        "tool_use_id": safe_id(event.get("tool_use_id")),
+        "duration_ms": duration if isinstance(duration, int) and not isinstance(duration, bool)
+        and 0 <= duration < 10**9 else None,
+    }
+    if failed and event.get("is_interrupt") is True:
+        entry["interrupted"] = True
+    append_log(TOOL_HOME / "log" / "outcomes.jsonl", entry, config["max_log_bytes"])
+
+
+# -- the agreement report ---------------------------------------------------------------------------
+
+def read_jsonl(path):
+    """Rows from a JSON-lines log and its rotated predecessor (older first); bad lines are skipped."""
+    rows = []
+    for candidate in (str(path) + ".1", str(path)):
+        try:
+            with open(candidate, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def parse_ts(value):
+    try:
+        moment = datetime.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=datetime.timezone.utc)
+
+
+def timed(rows, cutoff):
+    items = [(parse_ts(row.get("ts")), row) for row in rows]
+    return sorted(((ts, row) for ts, row in items if ts and (cutoff is None or ts >= cutoff)), key=lambda x: x[0])
+
+
+def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
+    """Pair each verdict with the command that followed it (same session and command, within `window`)."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=days) if days else None
+    verdict_rows, outcome_rows = timed(verdicts, cutoff), timed(outcomes, cutoff)
+    used, pending, disagreements = set(), 0, []
+    matrix = {kind: {"ran": 0, "ran_failed": 0, "not_run": 0} for kind in REPORT_DECISIONS}
+    for ts, row in verdict_rows:
+        kind = row.get("verdict")
+        if kind not in matrix:
+            continue
+        session, digest, pair = row.get("session_id"), row.get("command_sha256"), None
+        if session and digest:
+            for index, (ots, orow) in enumerate(outcome_rows):
+                if (index not in used and orow.get("session_id") == session and orow.get("command_sha256") == digest
+                        and 0 <= (ots - ts).total_seconds() <= window):
+                    pair = index
+                    break
+        if pair is not None:
+            used.add(pair)
+            result = outcome_rows[pair][1].get("outcome")
+            result = result if result in ("ran", "ran_failed") else "ran"
+        elif (now - ts).total_seconds() < window:
+            pending += 1
+            continue
+        else:
+            result = "not_run"
+        matrix[kind][result] += 1
+        if (kind == "approve" and result == "not_run") or (kind == "decline" and result != "not_run"):
+            disagreements.append({
+                "ts": row.get("ts"), "rule": row.get("rule"), "verdict": kind, "outcome": result,
+                "failed_checks": row.get("failed_checks") or [],
+                "reason_text": row.get("reason_text") or row.get("reason") or ""})
+    agree = matrix["approve"]["ran"] + matrix["approve"]["ran_failed"] + matrix["decline"]["not_run"]
+    decided = sum(matrix["approve"].values()) + sum(matrix["decline"].values())
+    return {"matrix": matrix, "pending": pending, "disagreements": disagreements,
+            "unprompted": len(outcome_rows) - len(used), "agreement": {"agree": agree, "decided": decided},
+            "days": days}
+
+
+def format_report(report):
+    matrix = report["matrix"]
+    total = sum(sum(row.values()) for row in matrix.values()) + report["pending"]
+    period = "last %d days" % report["days"] if report["days"] else "all time"
+    if total == 0:
+        return "No verdicts recorded (%s).\n" % period
+    lines = ["Codex approver report (%s)" % period,
+             "Verdicts: %d (%d still awaiting an answer)" % (total, report["pending"]), "",
+             "%-12s %6s %12s %9s" % ("verdict", "ran", "ran+failed", "not run")]
+    for kind in REPORT_DECISIONS:
+        row = matrix[kind]
+        lines.append("%-12s %6d %12d %9d" % (kind, row["ran"], row["ran_failed"], row["not_run"]))
+    agreement = report["agreement"]
+    if agreement["decided"]:
+        lines += ["", "Agreement (approve -> ran, decline -> not run): %d of %d = %.0f%%" % (
+            agreement["agree"], agreement["decided"], 100.0 * agreement["agree"] / agreement["decided"])]
+    lines.append("Ran without a prompt (always-allowed or not covered): %d" % report["unprompted"])
+    if report["disagreements"]:
+        lines += ["", "Disagreements (the approver and your answer differed):"]
+        for item in report["disagreements"][-20:]:
+            lines.append("  %s  %-8s -> %-10s %s  %s" % (
+                item["ts"], item["verdict"], item["outcome"], item["rule"],
+                (", ".join(item["failed_checks"]) + " | " if item["failed_checks"] else "") + printable(item["reason_text"])[:140]))
+    return "\n".join(lines) + "\n"
+
+
+def report_command(argv):
+    days = None
+    if "--days" in argv:
+        try:
+            days = int(argv[argv.index("--days") + 1])
+            if days < 1:
+                raise ValueError
+        except (IndexError, ValueError):
+            print("usage: codex_approver.py --report [--days N]", file=sys.stderr)
+            return 2
+    log = TOOL_HOME / "log"
+    sys.stdout.write(format_report(build_report(read_jsonl(log / "verdicts.jsonl"),
+                                                read_jsonl(log / "outcomes.jsonl"), days=days)))
+    return 0
+
+
+# -- hook entry ---------------------------------------------------------------------------------------
+
+def process(raw):
+    if len(raw) > MAX_STDIN:
+        return
+    event = json.loads(raw)
+    if isinstance(event, dict) and event.get("hook_event_name") in POST_EVENTS:
+        return process_outcome(event)
+    matched = match_event(event)
+    if matched is None:
+        return
+    command, spelling, config, rule, args = matched
     cwd = event.get("cwd")
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
         return
     os.chdir(cwd)
     harden_git_environment()
-    verdict = evaluate(rule, args, split[0], cwd, config)
+    verdict = evaluate(rule, args, spelling, cwd, config)
     entry = {
-        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        "rule": rule["id"], "verdict": verdict["verdict"], "reason": verdict["reason"],
-        "failed_checks": verdict["failed"], "mode": config["mode"],
-        "command_sha256": hashlib.sha256(command.encode("utf-8", "replace")).hexdigest(),
+        "ts": now_iso(), "rule": rule["id"], "verdict": verdict["verdict"], "reason": verdict["reason"],
+        "failed_checks": verdict["failed"], "mode": config["mode"], "command_sha256": command_digest(command),
+        "session_id": safe_id(event.get("session_id")),
     }
     for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256"):
         if verdict.get(key) is not None:
@@ -1079,7 +1253,14 @@ def process(raw):
         notify(rule["id"], verdict["verdict"])
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if "--report" in argv:
+        try:
+            return report_command(argv)
+        except Exception as exc:  # noqa: BLE001 - a report problem is shown, never a traceback
+            print("report failed: %s" % exc.__class__.__name__, file=sys.stderr)
+            return 1
     try:
         process(sys.stdin.read(MAX_STDIN + 1))
     except Exception:  # noqa: BLE001 - never a traceback, never a decision

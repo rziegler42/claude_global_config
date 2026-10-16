@@ -79,6 +79,8 @@ in `codex-approver/`.
   `repo_config_safe` check declines any such repository (names only, never
   values). The helper itself is not hardened; that, a heuristic secret scan,
   and the gap between approval and execution remain for any `allow` authority.
+- Outcome hooks (`PostToolUse`, `PostToolUseFailure`) record whether a covered command ran, without its output, so
+  `--report` can compare each verdict with what the owner did. They add no decision power.
 - Fact collection has a 12 s deadline and bounded Git calls, so a hostile
   repository costs the advice, not a hang.
 - Behavior was observed on macOS and Claude Code 2.1.301 only.

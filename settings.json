@@ -172,6 +172,140 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/claude-workflow commit:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/claude-workflow remove:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {

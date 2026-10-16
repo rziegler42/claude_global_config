@@ -167,6 +167,20 @@ check results, Codex verdict, reason. It may contain commit messages and is
 never committed. A short notification line reports the verdict. The log is the
 evidence used to decide whether to enable increment 2.
 
+
+### Outcomes and the agreement report
+
+A prompt that appears gets a verdict, but the log does not say what the owner answered. `PostToolUse` and
+`PostToolUseFailure` hooks, filtered by `if` to exactly the covered command spellings, record whether the command then
+ran: rule, a digest of the command, session id, tool use id, `ran` or `ran_failed`, exit code and duration, in
+`outcomes.jsonl`. The tool's output is never read into the log. A refused or abandoned prompt produces no event, and
+that absence is the signal that the owner (or the session) did not run it.
+
+`python3 ~/.claude/hooks/codex_approver.py --report [--days N]` pairs each verdict with the outcome of the same command
+in the same session within 30 minutes and prints a verdict-by-outcome table, the agreement rate (approve then ran,
+decline then not run), the disagreements with their reasons, and runs that had no prompt. Prompts younger than 30
+minutes are counted as awaiting an answer. The report is the evidence for deciding on increment 2.
+
 ## Increments
 
 1. Engine, two rules, collectors, Codex call, log, notification; advice-only.

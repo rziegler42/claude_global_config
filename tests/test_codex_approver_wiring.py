@@ -29,11 +29,30 @@ def manifest():
 class SettingsWiringTests(unittest.TestCase):
     def test_exactly_one_permission_request_hook_for_bash(self):
         hooks = settings()["hooks"]
-        self.assertEqual(list(hooks), ["PermissionRequest"])
+        self.assertEqual(sorted(hooks), ["PermissionRequest", "PostToolUse", "PostToolUseFailure"])
         (group,) = hooks["PermissionRequest"]
         self.assertEqual(group["matcher"], "Bash")
         (hook,) = group["hooks"]
         self.assertEqual((hook["type"], hook["command"]), ("command", COMMAND))
+        self.assertNotIn("if", hook)
+
+    def test_outcome_hooks_run_only_for_the_covered_commands(self):
+        """PostToolUse(Failure) records whether a covered command ran; `if` stops it spawning for any other Bash call."""
+        spellings = ("claude-workflow", "~/.claude/bin/claude-workflow", "~/.local/bin/claude-workflow",
+                     "python3 ~/.claude/bin/claude-workflow", "python3 -B ~/.claude/bin/claude-workflow")
+        expected = {"Bash(%s %s:*)" % (spelling, sub) for spelling in spellings for sub in ("commit", "remove")}
+        asked = {rule for rule in settings()["permissions"]["ask"] if rule in expected}
+        self.assertEqual(asked, expected, "the filters must be the same patterns the ask rules use")
+        for event in ("PostToolUse", "PostToolUseFailure"):
+            with self.subTest(event=event):
+                (group,) = settings()["hooks"][event]
+                self.assertEqual(group["matcher"], "Bash")
+                self.assertEqual({h["if"] for h in group["hooks"]}, expected)
+                self.assertEqual(len(group["hooks"]), len(expected), "one handler per pattern, no duplicates")
+                for hook in group["hooks"]:
+                    self.assertEqual((hook["type"], hook["command"]), ("command", COMMAND))
+                    self.assertIsInstance(hook["timeout"], int)
+                    self.assertLessEqual(hook["timeout"], 10)
 
     def test_hook_timeout_covers_codex_with_margin_and_stays_short(self):
         (hook,) = settings()["hooks"]["PermissionRequest"][0]["hooks"]

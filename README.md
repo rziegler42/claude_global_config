@@ -262,6 +262,11 @@ CLI signed in with `codex login`; without Codex there is simply no advice.
   mirrored), with the rule, verdict, failed check ids, a short reason, and a hash
   of the command and facts. A macOS notification reports the verdict; set
   `"notify": false` in `codex-approver/config.json` to silence it.
+- **Did the advice match what you did?** Two more hooks (`PostToolUse` and `PostToolUseFailure`, run only for these
+  same commands) record whether each command then ran, in `outcomes.jsonl` beside the verdict log, without its output.
+  `python3 ~/.claude/hooks/codex_approver.py --report` (add `--days 7` to limit it) shows approve/decline against ran/not
+  run, the agreement rate, and every disagreement with the reviewer's reason. Use it to judge whether the approver
+  could be trusted to decide.
 - **Settings.** `codex-approver/config.json` holds the Codex model, effort and
   timeout. `mode` accepts only `advise`; there is no switch that lets the hook
   approve.
