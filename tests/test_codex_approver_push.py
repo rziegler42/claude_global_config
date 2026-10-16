@@ -205,12 +205,19 @@ class DangerousShapeTests(PushCase):
 
 
 class OutgoingContentTests(PushCase):
+    def test_the_outgoing_diff_is_in_the_facts_for_the_reviewer(self):
+        self.commit_file("c.txt", "a plain line\n", "Add c")
+        diff = self.facts("git push origin main")["outgoing"]["diff"]
+        self.assertIn("+++ b/c.txt", diff)
+        self.assertIn("+a plain line", diff)
+
     def test_a_secret_in_a_diff_or_a_message_declines_and_is_withheld(self):
         self.commit_file("k.txt", "key = %s\n" % TOKEN, "Add key file")
         result = self.analyze("git push origin main")
         self.assertFails(result, "no_secret_lines")
         text = ca.canonical_facts(result["facts"])
         self.assertNotIn(TOKEN, text)
+        self.assertEqual(result["facts"]["outgoing"]["diff"], "<withheld: secret-looking content>")
         self.git("switch", "-q", "-c", "msg", "origin/main")
         self.commit_file("m.txt", "m\n", "token %s" % TOKEN)
         result = self.analyze("git push origin msg")

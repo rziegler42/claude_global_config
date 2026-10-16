@@ -1160,9 +1160,11 @@ def collect_push(ctx):
              *[item["latest_reflog"] or "" for item in facts["outgoing"]["tracking_refs"]]]
     if secret_kind("\n".join(names)) == "pattern":  # entropy would flag ordinary hashed fixture directories
         facts["secret_hits"].append({"path": "<names>", "kind": "pattern"})
+    facts["outgoing"]["diff"] = text
     kind = secret_kind(text)
     if kind:
         facts["secret_hits"].append({"path": "<outgoing diff>", "kind": kind})
+        facts["outgoing"]["diff"] = "<withheld: secret-looking content>"
         facts["outgoing"]["commits"] = [dict(item, message="<withheld: secret-looking content>")
                                         for item in facts["outgoing"]["commits"]]
     return facts
