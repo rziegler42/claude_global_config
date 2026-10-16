@@ -45,3 +45,4 @@ List every ADR, including rejected and superseded records.
 |---|---|---|
 | [0001](0001-codex-reviews-with-a-prompt-only-read-boundary.md) | Codex plan review runs read-only with a prompt-only read boundary | Accepted |
 | [0002](0002-snapshot-bundle-submission.md) | Test uncommitted work by submitting a snapshot bundle | Accepted |
+| [0003](0003-remote-runner-fetch.md) | Retrieve job output with a framed fetch over the worker channel | Accepted |

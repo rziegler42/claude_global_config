@@ -19,7 +19,7 @@ SPELLINGS = (
     "python3 -B ~/.claude/bin/{tool} {cmd}",
 )
 WORKFLOW_ASK = ("commit", "amend-message", "remove")
-RUNNER_ASK = ("submit", "cancel", "prune")
+RUNNER_ASK = ("submit", "cancel", "prune", "fetch")
 RUNNER_ALLOW = ("remotes", "recommend", "status", "log", "artifacts")
 PLAIN_ASK = (
     "git commit", "git push", "git tag", "git switch", "git stash",

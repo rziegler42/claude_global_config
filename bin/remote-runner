@@ -27,7 +27,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import unicodedata
 import uuid
 
 
@@ -50,6 +52,17 @@ SOURCE_REF = re.compile(r"^refs/(heads|tags)/[A-Za-z0-9._/-]{1,200}$")
 STARTING_GRACE = 900.0
 LOG_LIMIT = 1024 * 1024
 ARTIFACT_LIMIT = 2000
+FETCH_MAX_FILES = 16
+FETCH_MAX_BYTES = 512 * 1024 * 1024
+FETCH_MAGIC = b"RRFETCH1\n"
+FETCH_HEADER_LIMIT = 64 * 1024
+FETCH_CHUNK = 1024 * 1024
+FETCH_STATES = frozenset({"PASSED", "FAILED", "FINISHED"})
+FETCH_IDLE_TIMEOUT = 120.0
+# The whole transfer may take the idle allowance plus its bytes at this rate (bytes/second),
+# so a runner that trickles data cannot hold the caller for hours.
+FETCH_MIN_RATE = 256 * 1024.0
+FETCH_STDERR_LIMIT = 4000
 REQUIREMENT_KEYS = frozenset({"os", "arch", "min_memory_gib", "min_cpu_cores", "labels"})
 SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024
 SNAPSHOT_MAX_FILES = 5000
@@ -606,12 +619,10 @@ def remote_name_from_job(job: str) -> str:
     return job.split("--", 1)[0]
 
 
-def invoke_worker(remote: str, operation: str, *arguments: str,
-                  stream: bool = False, payload: Path | None = None
-                  ) -> subprocess.CompletedProcess[bytes]:
-    """Run a worker operation; ``payload`` replaces stdin (see ``BOOTSTRAP``)."""
+def worker_ssh_command(remote: str, operation: str, *arguments: str,
+                       bootstrap: bool = False, interactive: bool = True) -> list[str]:
     config = remote_config(remote)
-    entry = ["python3", "-I", "-c", BOOTSTRAP] if payload is not None else ["python3", "-I", "-"]
+    entry = ["python3", "-I", "-c", BOOTSTRAP] if bootstrap else ["python3", "-I", "-"]
     worker_args = [*entry, "--worker", operation,
                    "--workspace-root", str(config["workspace_root"]),
                    "--max-jobs", str(config["max_jobs"]), *arguments]
@@ -619,10 +630,21 @@ def invoke_worker(remote: str, operation: str, *arguments: str,
     # login shell, so every argument is quoted; "--" keeps the host from being
     # read as an ssh option.
     remote_command = " ".join(shlex.quote(item) for item in worker_args)
+    # A streaming operation must neither prompt nor wait forever on a dead connection.
+    bounds = [] if interactive else ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+                                     "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+    return ["ssh", *bounds, "--", str(config["ssh_host"]), remote_command]
+
+
+def invoke_worker(remote: str, operation: str, *arguments: str,
+                  stream: bool = False, payload: Path | None = None
+                  ) -> subprocess.CompletedProcess[bytes]:
+    """Run a worker operation; ``payload`` replaces stdin (see ``BOOTSTRAP``)."""
+    ssh_command = worker_ssh_command(remote, operation, *arguments, bootstrap=payload is not None)
     with (payload if payload is not None else Path(__file__)).open("rb") as source:
         try:
             return subprocess.run(
-                ["ssh", "--", str(config["ssh_host"]), remote_command], stdin=source,
+                ssh_command, stdin=source,
                 check=True, capture_output=not stream,
             )
         except subprocess.CalledProcessError as error:
@@ -731,6 +753,489 @@ def _submit_snapshot(args: argparse.Namespace, repo: Path) -> None:
         print(json.dumps(data, indent=2))
 
 
+class FetchError(Exception):
+    """A refusal or failure while fetching; reported through ``fail``."""
+
+
+def _clean_text(text: str, limit: int = 2000) -> str:
+    return "".join(ch if ch.isprintable() else "?" for ch in text)[:limit]
+
+
+def _fold(text: str) -> str:
+    """A comparison key: names equal here are one file on a case- or normalisation-folding disk."""
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def _encodable(text: str, what: str) -> None:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        fail(f"unsafe {what}: it is not valid UTF-8")
+
+
+def validate_fetch_path(path: str) -> list[str]:
+    """A job-relative file path as its components; anything that is not plain is refused."""
+    _encodable(path, "fetch path")
+    if not path or len(path) > 1024 or path.startswith("-") or path.startswith("/"):
+        fail(f"unsafe fetch path: {_clean_text(path, 80)!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path):
+        fail("unsafe fetch path: control characters are not allowed")
+    parts = path.split("/")
+    if any(part in ("", ".", "..") or len(part.encode()) > 255 for part in parts):
+        fail(f"unsafe fetch path: {_clean_text(path, 80)!r}")
+    return parts
+
+
+def validate_fetch_name(name: str) -> str:
+    """A replacement basename: one plain filename, never a path."""
+    _encodable(name, "--as name")
+    if (not name or len(name.encode()) > 255 or name in (".", "..") or name.startswith("-")
+            or "/" in name or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name)):
+        fail(f"unsafe --as name: {_clean_text(name, 80)!r}")
+    return name
+
+
+def fetch_target_parts(parts: list[str], name: str | None) -> list[str]:
+    return [*parts[:-1], name] if name else list(parts)
+
+
+def _git_at(path: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(["git", "-C", str(path), *args], check=False, capture_output=True)
+    except OSError:
+        fail("cannot run git to check the destination; fetch needs git")
+
+
+def git_directories(path: Path) -> list[Path]:
+    """The git directories of the repository containing ``path``; empty outside one."""
+    result = _git_at(path, "rev-parse", "--absolute-git-dir", "--git-common-dir")
+    if result.returncode != 0:
+        return []
+    found = []
+    for line in result.stdout.decode(errors="replace").splitlines():
+        candidate = Path(line)
+        found.append((candidate if candidate.is_absolute() else path / candidate).resolve())
+    return found
+
+
+def git_toplevel(path: Path) -> Path | None:
+    result = _git_at(path, "rev-parse", "--show-toplevel")
+    if result.returncode != 0:
+        return None
+    return Path(result.stdout.decode(errors="replace").strip()).resolve()
+
+
+def inside_directory(path: Path, directory: Path) -> bool:
+    """Whether ``path`` is ``directory`` or lies below it, by file identity (not by spelling)."""
+    current = path
+    while True:
+        try:
+            if os.path.samefile(current, directory):
+                return True
+        except OSError:
+            pass
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
+def repo_relative_parts(base: Path, repo: Path) -> list[str] | None:
+    """``base`` as path components below ``repo``, found by identity; None when outside it."""
+    names: list[str] = []
+    current = base
+    while True:
+        try:
+            if os.path.samefile(current, repo):
+                return names[::-1]
+        except OSError:
+            pass
+        if current.parent == current:
+            return None
+        names.append(current.name)
+        current = current.parent
+
+
+def check_fetch_target(base: Path, parts: list[str], *, repo: Path | None, force: bool) -> Path:
+    """Refuse a local target that is unsafe or would be overwritten; return the path.
+
+    ``base`` must already be resolved. No existing component below it may be a link
+    or a non-directory; git metadata is never a target; a dot-prefixed name (shell,
+    ssh, git, editor, and Claude configuration live there), an existing file, and a
+    git-tracked file need ``force``.
+    """
+    shown = str(base.joinpath(*parts))
+    for name in (*base.parts[1:], *parts):
+        if _fold(name) == ".git":
+            fail(f"refusing to write inside git metadata: {shown!r}")
+    for directory in {*git_directories(base), *(git_directories(repo) if repo else [])}:
+        if inside_directory(base, directory):
+            fail(f"refusing to write inside git metadata: {shown!r}")
+    # Dot-prefixed names are judged against the working repository only: a destination that
+    # is merely its own repository (say ~/.claude under git) gets no exemption for its name.
+    scope = repo_relative_parts(base, repo) if repo is not None else None
+    for name in [*(scope if scope is not None else base.parts[1:]), *parts]:
+        if name.startswith(".") and not force:
+            fail(f"{shown!r} touches {name!r}; dot-prefixed names hold configuration that git, "
+                 "Claude, ssh, or the shell will run or read; use --force to write it")
+    current = base
+    for part in parts[:-1]:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            break
+        if not stat.S_ISDIR(info.st_mode):
+            fail(f"refusing {shown!r}: {part!r} is a link or not a directory")
+    target = base.joinpath(*parts)
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is not None:
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"refusing {str(target)!r}: it exists and is not a regular file")
+        if not force:
+            fail(f"{str(target)!r} already exists; use --force to overwrite")
+    if not force:
+        # The repositories that decide what is tracked: the working one, the destination's
+        # own, and the deepest one holding the target directory (a nested repository).
+        anchor, consumed = base, 0
+        for part in parts[:-1]:
+            if not (anchor / part).is_dir() or (anchor / part).is_symlink():
+                break
+            anchor, consumed = anchor / part, consumed + 1
+        repos = [item for item in dict.fromkeys([repo, git_toplevel(base), git_toplevel(anchor)])
+                 if item is not None]
+        for item in repos:
+            prefix = repo_relative_parts(anchor, item)
+            if prefix is None:
+                continue
+            wanted = _fold("/".join([*prefix, *parts[consumed:]]))
+            listing = _git_at(item, "ls-files", "-z")
+            if listing.returncode != 0:
+                fail(f"cannot tell whether {str(target)!r} is tracked by git; "
+                     "use --force to skip the check")
+            for entry in listing.stdout.decode(errors="replace").split("\0"):
+                folded = _fold(entry)
+                if entry and (folded == wanted or folded.startswith(wanted + "/")):
+                    fail(f"{str(target)!r} is tracked by git; use --force to overwrite it")
+    return target
+
+
+class _Activity:
+    """Progress clock and total-time budget shared by the stream wrapper and the watchdog."""
+
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self.last = self.started
+        self.deadline = self.started + FETCH_IDLE_TIMEOUT
+        self.stalled: str | None = None  # "idle" or "budget" once the watchdog has fired
+
+    def touch(self) -> None:
+        self.last = time.monotonic()
+
+    def set_budget(self, total_bytes: int) -> None:
+        self.deadline = self.started + FETCH_IDLE_TIMEOUT + total_bytes / FETCH_MIN_RATE
+
+
+class _WatchedStream:
+    """Reads that count as progress whenever any bytes arrive, not when a whole read ends."""
+
+    def __init__(self, stream, activity: _Activity) -> None:
+        self._stream = stream
+        self._activity = activity
+
+    def set_budget(self, total_bytes: int) -> None:
+        self._activity.set_budget(total_bytes)
+
+    def _available(self) -> bytes:
+        data = self._stream.peek(1)  # blocks until something arrives, then returns what is buffered
+        self._activity.touch()
+        return data
+
+    def read(self, size: int) -> bytes:
+        out = bytearray()
+        while len(out) < size:
+            available = self._available()
+            if not available:
+                break
+            out += self._stream.read(min(len(available), size - len(out)))
+        return bytes(out)
+
+    def readline(self, size: int) -> bytes:
+        out = bytearray()
+        while len(out) < size:
+            available = self._available()
+            if not available:
+                break
+            window = available[:size - len(out)]
+            newline = window.find(b"\n")
+            out += self._stream.read(newline + 1 if newline >= 0 else len(window))
+            if newline >= 0:
+                break
+        return bytes(out)
+
+
+class _StderrTail:
+    """Drain the runner's stderr, keeping only the first few KiB."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self._data = bytearray()
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        descriptor = self._stream.fileno()
+        while True:
+            try:
+                chunk = os.read(descriptor, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            if len(self._data) < FETCH_STDERR_LIMIT:
+                self._data += chunk[:FETCH_STDERR_LIMIT - len(self._data)]
+
+    def text(self) -> str:
+        self._thread.join(timeout=2)
+        return _clean_text(bytes(self._data).decode(errors="replace")).strip()
+
+
+@contextlib.contextmanager
+def fetch_session(remote: str, job: str, paths: list[str]):
+    """Run the worker's ``fetch``; yield ``(process, stderr_tail, activity)``.
+
+    ``process.stdout`` is the data stream. A watchdog kills the process when no data has
+    arrived for ``FETCH_IDLE_TIMEOUT`` seconds, so a stalled runner cannot hang the caller.
+    """
+    command = worker_ssh_command(remote, "fetch", "--job", job,
+                                 *[f"--fetch-path={b64(path)}" for path in paths],
+                                 interactive=False)
+    activity = _Activity()
+    finished = threading.Event()
+    with Path(__file__).open("rb") as script:
+        process = subprocess.Popen(command, stdin=script, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        raw_stdout = process.stdout
+        process.stdout = _WatchedStream(raw_stdout, activity)  # type: ignore[assignment]
+        tail = _StderrTail(process.stderr)
+
+        def watch() -> None:
+            while not finished.wait(0.25):
+                now = time.monotonic()
+                if now - activity.last > FETCH_IDLE_TIMEOUT:
+                    activity.stalled = "idle"
+                elif now > activity.deadline:
+                    activity.stalled = "budget"
+                else:
+                    continue
+                with contextlib.suppress(OSError):
+                    process.kill()
+                return
+
+        watchdog = threading.Thread(target=watch, daemon=True)
+        watchdog.start()
+        try:
+            yield process, tail, activity
+        finally:
+            finished.set()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raw_stdout.close()
+            process.stderr.close()  # type: ignore[union-attr]
+
+
+def _read_exact_into(stream, size: int, handle: int) -> str:
+    digest = hashlib.sha256()
+    remaining = size
+    while remaining:
+        chunk = stream.read(min(FETCH_CHUNK, remaining))
+        if not chunk:
+            raise FetchError("the stream ended before the file was complete")
+        digest.update(chunk)
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(handle, view):]
+        remaining -= len(chunk)
+    return digest.hexdigest()
+
+
+def worker_detail(errors) -> str:
+    return errors.text()
+
+
+def receive_fetch(process, errors, expected: list[str], targets: list[list[str]], base: Path,
+                  force: bool) -> dict[str, object]:
+    """Read the framed stream, stage every file beside ``base``, then place them.
+
+    Frames: ``FETCH_MAGIC``, one JSON header line (job view and file sizes), then for
+    each file its bytes followed by a SHA-256 hex line. Nothing is placed until the
+    whole stream verified and the worker exited cleanly.
+    """
+    stream = process.stdout
+    base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+    staged: list[tuple[str, str, int, str]] = []
+    placed: list[list[str]] = []
+    try:
+        try:
+            if stream.readline(len(FETCH_MAGIC) + 1) != FETCH_MAGIC:
+                process.kill()
+                process.wait()
+                raise FetchError(worker_detail(errors) or "the runner did not answer with a fetch stream")
+            line = stream.readline(FETCH_HEADER_LIMIT + 1)
+            if not line.endswith(b"\n") or len(line) > FETCH_HEADER_LIMIT:
+                raise FetchError("the fetch header is malformed")
+            header = json.loads(line)
+            listing = header.get("files") if isinstance(header, dict) else None
+            view = header.get("job") if isinstance(header, dict) else None
+            if (not isinstance(listing, list) or len(listing) != len(expected)
+                    or not isinstance(view, dict)):
+                raise FetchError("the fetch header does not match the request")
+            sizes: list[int] = []
+            for item, wanted in zip(listing, expected):
+                size = item.get("size") if isinstance(item, dict) else None
+                if (not isinstance(item, dict) or item.get("path") != wanted
+                        or not isinstance(size, int) or isinstance(size, bool) or size < 0):
+                    raise FetchError("the fetch header does not match the request")
+                sizes.append(size)
+            if sum(sizes) > FETCH_MAX_BYTES:
+                raise FetchError(f"the files exceed the {FETCH_MAX_BYTES} byte limit")
+            if hasattr(stream, "set_budget"):
+                stream.set_budget(sum(sizes))
+            for wanted, size in zip(expected, sizes):
+                temp = f".rr-fetch-{uuid.uuid4().hex}.tmp"
+                staged.append((temp, wanted, size, ""))  # recorded first so cleanup always sees it
+                handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                                 0o600, dir_fd=base_fd)
+                try:
+                    digest = _read_exact_into(stream, size, handle)
+                    os.fchmod(handle, 0o644)
+                finally:
+                    os.close(handle)
+                if stream.readline(66) != digest.encode() + b"\n":
+                    raise FetchError(f"checksum mismatch for {_clean_text(wanted, 80)!r}")
+                staged[-1] = (temp, wanted, size, digest)
+            if stream.read(1):
+                raise FetchError("the stream carried unexpected extra data")
+        except (ValueError, OSError) as error:
+            raise FetchError(_clean_text(str(error))) from error
+        if process.wait() != 0:
+            raise FetchError(worker_detail(errors) or "the runner reported a failure")
+        results = []
+        for (temp, wanted, size, digest), parts in zip(staged, targets):
+            directory = os.dup(base_fd)
+            try:
+                for part in parts[:-1]:
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(part, 0o755, dir_fd=directory)
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                                    dir_fd=directory)
+                    os.close(directory)
+                    directory = child
+                try:
+                    if force:
+                        os.rename(temp, parts[-1], src_dir_fd=base_fd, dst_dir_fd=directory)
+                    else:
+                        os.link(temp, parts[-1], src_dir_fd=base_fd, dst_dir_fd=directory)
+                        os.unlink(temp, dir_fd=base_fd)
+                except FileExistsError:
+                    raise FetchError(
+                        f"{'/'.join(parts)!r} appeared during the fetch; use --force to overwrite"
+                        + (f"; already placed: {', '.join('/'.join(item) for item in placed)}"
+                           if placed else "")) from None
+            except OSError as error:
+                raise FetchError(
+                    f"cannot place {'/'.join(parts)!r}: {_clean_text(str(error))}"
+                    + (f"; already placed: {', '.join('/'.join(item) for item in placed)}"
+                       if placed else "")) from error
+            finally:
+                os.close(directory)
+            placed.append(parts)
+            results.append({"remote_path": wanted, "local_path": str(base.joinpath(*parts)),
+                            "bytes": size, "sha256": digest})
+        return {"view": view, "files": results}
+    finally:
+        for temp, *_rest in staged:
+            with contextlib.suppress(OSError):
+                os.unlink(temp, dir_fd=base_fd)
+        os.close(base_fd)
+
+
+def fetch_job_summary(view: dict[str, object]) -> dict[str, object]:
+    """The runner's job view reduced to validated fields; the runner is not trusted."""
+    def word(value: object, pattern: re.Pattern[str]) -> str | None:
+        return value if isinstance(value, str) and pattern.fullmatch(value) else None
+    state = view.get("state")
+    integrity = view.get("integrity")
+    return {
+        "state": state if isinstance(state, str) and state in STATE_NAMES else "UNKNOWN",
+        "commit": word(view.get("commit"), HEX40),
+        "dut_commit": word(view.get("dut_commit"), HEX40),
+        "integrity": integrity if integrity in ("ok", "mismatch", "invalid") else "invalid",
+        "snapshot": view.get("snapshot") is True,
+    }
+
+
+def fetch_controller(args: argparse.Namespace) -> None:
+    remote = remote_name_from_job(args.job)
+    if len(args.paths) > FETCH_MAX_FILES:
+        fail(f"at most {FETCH_MAX_FILES} files can be fetched at once")
+    if len({_fold(path) for path in args.paths}) != len(args.paths):
+        fail("a path was named more than once (paths that differ only in case or Unicode "
+             "form collide on some disks)")
+    split = [validate_fetch_path(path) for path in args.paths]
+    if args.name is not None:
+        if len(args.paths) != 1:
+            fail("--as renames one file; name exactly one path")
+        validate_fetch_name(args.name)
+    try:
+        repo: Path | None = repository_root().resolve()
+    except (subprocess.CalledProcessError, OSError):
+        repo = None
+    if args.dest is not None:
+        try:
+            base = Path(args.dest).expanduser()
+        except RuntimeError:
+            fail(f"cannot expand --dest: {_clean_text(args.dest, 200)!r}")
+        if not base.is_dir():
+            fail(f"--dest is not an existing directory: {_clean_text(args.dest, 200)!r}")
+        base = base.resolve()
+    elif repo is None:
+        fail("not inside a git repository; use --dest to choose the destination directory")
+    else:
+        base = repo
+    targets = [fetch_target_parts(parts, args.name) for parts in split]
+    for parts in targets:
+        check_fetch_target(base, parts, repo=repo, force=args.force)
+
+    # A termination signal must unwind receive_fetch, or staged files would be left behind.
+    def terminate(signum: int, frame: object) -> None:
+        raise SystemExit(128 + signum)
+    handled = [getattr(signal, name) for name in
+               ("SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGALRM")
+               if hasattr(signal, name)]
+    previous = {sig: signal.signal(sig, terminate) for sig in handled}
+    try:
+        with fetch_session(remote, args.job, args.paths) as (process, errors, activity):
+            try:
+                outcome = receive_fetch(process, errors, args.paths, targets, base, args.force)
+            except FetchError as error:
+                if activity.stalled == "budget":
+                    fail("fetch failed: the transfer exceeded its time budget")
+                if activity.stalled:
+                    fail(f"fetch failed: the runner stalled (no data for {FETCH_IDLE_TIMEOUT:g} seconds)")
+                fail(f"fetch failed: {error}")
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    print(json.dumps({
+        "job": args.job, **fetch_job_summary(outcome["view"]),  # type: ignore[arg-type]
+        "files": outcome["files"], "untrusted_job_data": True,
+    }, indent=2))
+
+
 def controller(args: argparse.Namespace) -> None:
     if args.action == "remotes":
         for name, config in sorted(load_remotes().items()):
@@ -800,6 +1305,10 @@ def controller(args: argparse.Namespace) -> None:
             *( ["--apply"] if args.apply else []),
         )
         print(result.stdout.decode(), end="")
+        return
+
+    if args.action == "fetch":
+        fetch_controller(args)
         return
 
     remote = remote_name_from_job(args.job)
@@ -1037,6 +1546,73 @@ def prune_worker(root: Path, projects_root: Path, jobs_root: Path,
         print(json.dumps({"mode": "preview", "candidates": candidates}, indent=2))
 
 
+def fetch_worker(job_dir: Path, metadata: dict[str, object], metadata_path: Path,
+                 encoded_paths: list[str]) -> None:
+    """Stream the named regular files of a finished job; see ``receive_fetch`` for the frames."""
+    if not 0 < len(encoded_paths) <= FETCH_MAX_FILES:
+        fail(f"between 1 and {FETCH_MAX_FILES} files must be named")
+    names = [unb64(item) for item in encoded_paths]
+    split = [validate_fetch_path(name) for name in names]
+    if len(set(names)) != len(names):
+        fail("a path was named more than once")
+    # The record is job-writable: a job still alive is never fetched, whatever it claims.
+    if refresh_state(metadata, metadata_path) or metadata.get("state") not in FETCH_STATES:
+        fail("the job has not finished; fetch needs a PASSED, FAILED or FINISHED job")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    opened: list[tuple[int, int]] = []
+    try:
+        try:
+            job_fd = os.open(job_dir, flags | os.O_DIRECTORY)
+            try:
+                root_fd = os.open("worktree", flags | os.O_DIRECTORY, dir_fd=job_fd)
+            finally:
+                os.close(job_fd)
+            try:
+                for name, parts in zip(names, split):
+                    directory = os.dup(root_fd)
+                    try:
+                        for part in parts[:-1]:
+                            child = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory)
+                            os.close(directory)
+                            directory = child
+                        handle = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=directory)
+                    finally:
+                        os.close(directory)
+                    info = os.fstat(handle)
+                    opened.append((handle, info.st_size))
+                    if not stat.S_ISREG(info.st_mode):
+                        fail(f"not a regular file: {_clean_text(name, 80)!r}")
+            finally:
+                os.close(root_fd)
+        except OSError as error:
+            fail(f"cannot open a requested file: {_clean_text(error.strerror or str(error), 80)}")
+        if sum(size for _, size in opened) > FETCH_MAX_BYTES:
+            fail(f"the files exceed the {FETCH_MAX_BYTES} byte limit")
+        out = sys.stdout.buffer
+        out.write(FETCH_MAGIC)
+        header = {"job": public_view(metadata),
+                  "files": [{"path": name, "size": size}
+                            for name, (_, size) in zip(names, opened)]}
+        out.write(json.dumps(header).encode() + b"\n")
+        for name, (handle, size) in zip(names, opened):
+            digest = hashlib.sha256()
+            remaining = size
+            while remaining:
+                chunk = os.read(handle, min(FETCH_CHUNK, remaining))
+                if not chunk:
+                    fail(f"{_clean_text(name, 80)!r} shrank while being read")
+                digest.update(chunk)
+                out.write(chunk)
+                remaining -= len(chunk)
+            if os.fstat(handle).st_size != size:
+                fail(f"{_clean_text(name, 80)!r} changed while being read")
+            out.write(digest.hexdigest().encode() + b"\n")
+        out.flush()
+    finally:
+        for handle, _ in opened:
+            os.close(handle)
+
+
 def worker(args: argparse.Namespace) -> None:
     root = Path(args.workspace_root).expanduser().resolve()
     jobs_root = root / "jobs"
@@ -1245,6 +1821,8 @@ def worker(args: argparse.Namespace) -> None:
                     follower.terminate()
         else:
             print(read_log(log), end="")
+    elif args.worker_action == "fetch":
+        fetch_worker(job_dir, metadata, metadata_path, args.fetch_path)
     elif args.worker_action == "artifacts":
         entries: list[str] = []
         truncated = False
@@ -1290,6 +1868,15 @@ def parser() -> argparse.ArgumentParser:
     prune.add_argument("--failure-days", type=float, default=30)
     prune.add_argument("--apply", action="store_true",
                        help="remove previewed jobs; omission is a preview")
+    fetch = sub.add_parser("fetch", help="copy named files from a finished job's worktree")
+    fetch.add_argument("job")
+    fetch.add_argument("paths", nargs="+", metavar="path",
+                       help="file path relative to the job's worktree")
+    fetch.add_argument("--dest", help="local base directory (default: the repository root)")
+    fetch.add_argument("--as", dest="name",
+                       help="local filename to use instead of the remote one (single file only)")
+    fetch.add_argument("--force", action="store_true",
+                       help="overwrite an existing or git-tracked local file")
     for name in ("status", "log", "artifacts", "cancel"):
         item = sub.add_parser(name)
         item.add_argument("job")
@@ -1302,7 +1889,7 @@ def worker_parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(add_help=False)
     result.add_argument("--worker", dest="worker_action", required=True,
                         choices=("submit", "submit-snapshot", "status", "log", "artifacts", "cancel",
-                                     "prune", "availability"))
+                                     "fetch", "prune", "availability"))
     result.add_argument("--workspace-root", required=True)
     result.add_argument("--max-jobs", type=int, required=True)
     result.add_argument("--job")
@@ -1315,6 +1902,7 @@ def worker_parser() -> argparse.ArgumentParser:
     result.add_argument("--bundle-size", type=int)
     result.add_argument("--bundle-sha256")
     result.add_argument("--follow", action="store_true")
+    result.add_argument("--fetch-path", action="append", default=[])
     result.add_argument("--success-days", type=float, default=7)
     result.add_argument("--failure-days", type=float, default=30)
     result.add_argument("--apply", action="store_true")

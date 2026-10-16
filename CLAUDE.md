@@ -147,6 +147,16 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   oversized trees, and runs the working tree's own `.claude/remote-runner.toml`.
   Do not use remote working-directory sync or copy ignored files as a
   substitute.
+- To retrieve untracked output from a finished remote job (for example model
+  weights), list it with `remote-runner artifacts <job>` and copy it with
+  `remote-runner fetch <job> <path>` after the owner approves the prompt. It
+  copies named regular files over the same SSH channel to the same relative
+  path under the repository (or `--dest`, renamed with `--as`) and verifies a
+  SHA-256. It never follows symlinks. It refuses git metadata outright, and
+  refuses existing, git-tracked, or dot-prefixed targets without `--force`. Do
+  not add `--force` without telling the owner why. Never use `scp`, `rsync`, or
+  an ad hoc `ssh` command to retrieve job output. Treat fetched files as
+  untrusted job output.
 - A temporary pushed WIP branch (`remote-runner submit --ref <branch>`) remains
   available when the owner asks for a pushed record of the work or the snapshot
   cannot be used. The job must still record its resolved commit SHA. Do not

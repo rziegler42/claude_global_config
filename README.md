@@ -448,9 +448,8 @@ remote-runner cancel buildbox--example-project--20260920-130000--1a2b3c4d
 checkout was clean as `dut_clean`. Treat results as valid only when those match
 the intended revision and cleanliness contract. `log` reads the combined
 standard output and error stream. `artifacts` lists files retained in the remote
-job directory; it does not download them. Use an intentionally designed profile
-or normal authenticated file-transfer tooling when an artifact must be copied.
-`cancel` sends `SIGTERM` to the job's process group.
+job directory; use `fetch` (below) to copy them back. `cancel` sends `SIGTERM`
+to the job's process group.
 
 ### Testing uncommitted work with a snapshot
 
@@ -483,6 +482,39 @@ untracked files, honors `.gitignore`, and skips nested repositories.
   The snapshot commit uses the fixed identity `remote-runner <noreply>`.
 - Prune removes the snapshot ref, bundle, and worktree on the runner; objects
   remain in the repository cache until Git's own garbage collection.
+
+### Retrieving job output
+
+```sh
+remote-runner artifacts <job>                         # find the file names
+remote-runner fetch <job> checkpoints/latest.pt       # -> <repo>/checkpoints/latest.pt
+remote-runner fetch <job> checkpoints/latest.pt --as model-v3.pt
+remote-runner fetch <job> checkpoints/latest.pt --dest ~/weights
+```
+
+`fetch` copies named regular files from a finished job's worktree (`PASSED`,
+`FAILED`, or `FINISHED`) to the local machine over the same SSH channel. It is an
+owner-prompted action. `artifacts` lists paths such as `worktree/checkpoints/latest.pt`;
+give `fetch` the path relative to `worktree/`.
+
+- Default placement is the same relative path under the repository root.
+  `--dest DIR` (an existing directory) replaces the root; `--as NAME` replaces
+  the basename and needs exactly one file.
+- At most 16 files and 512 MiB per call; directories and globs are not fetched.
+- Output is JSON: the job's `dut_commit` and `integrity`, and for each file the
+  remote path, local path, size, and SHA-256. Each file is verified against the
+  runner's digest and placed atomically; a failure leaves nothing behind.
+- Refused without `--force`: an existing file, a git-tracked file (in this
+  repository or the destination's own), and any dot-prefixed path component
+  such as `.claude`, `.ssh`, or `.envrc`. Git metadata (`.git`, or a repository's
+  real git directory) is refused even with `--force`. Symlinks are never
+  followed on either side. A `--dest` outside the repository is judged by its
+  full path, so a destination such as `~/.cache/out` needs `--force` too.
+- An idle transfer is stopped after 120 s, and a transfer that trickles past an
+  overall budget is stopped too. Press Ctrl-C or terminate it at any time; staged
+  files are removed (only `SIGKILL` can leave a `.rr-fetch-*.tmp` file).
+- Fetched files are untrusted job output. The digest proves the transfer, not
+  the job.
 
 ### Retention cleanup
 

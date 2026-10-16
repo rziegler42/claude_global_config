@@ -103,3 +103,4 @@ Completion: Observable evidence.
 | [0001](0001-install-py-and-settings-policy.md) | Completed | `install.py` replaces `install.sh`; settings policy, plugin presence, file-mode rules, security hardening |
 | [0002](0002-second-opinion-plan-review.md) | Completed | `ask-codex` and the `second-opinion` skill: bounded, read-only Codex plan review; two security reviews; calibration |
 | [0003](0003-remote-runner-snapshot-submission.md) | Completed | Security review of the helpers and guard; structural permission set; `remote-runner submit --snapshot` with bundle transport and provenance; ADR 0002; probes and live prune check carried as deferred |
+| [0004](0004-remote-runner-fetch.md) | Completed | `remote-runner fetch`: framed, owner-prompted retrieval of job output with `--dest`/`--as`; three independent security-review passes; ADR 0003; live fetch from `ned` verified |
