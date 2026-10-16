@@ -1,0 +1,20 @@
+{
+  "id": "ask-codex-archive",
+  "tool": "ask-codex",
+  "subcommand": "archive",
+  "collector": "archive",
+  "checks": [
+    "status_ok",
+    "no_secret_lines"
+  ],
+  "rubric": "ask-codex-archive",
+  "required": [],
+  "flags": {
+    "--plan": "value"
+  },
+  "positionals": "none",
+  "review_checks": [
+    "review_is_finished",
+    "no_reviewer_directed_text"
+  ]
+}

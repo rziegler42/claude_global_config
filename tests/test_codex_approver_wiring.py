@@ -42,6 +42,9 @@ class SettingsWiringTests(unittest.TestCase):
                      "python3 ~/.claude/bin/claude-workflow", "python3 -B ~/.claude/bin/claude-workflow")
         expected = {"Bash(%s %s:*)" % (spelling, sub) for spelling in spellings for sub in ("commit", "remove")}
         expected.add("Bash(git push:*)")
+        expected |= {"Bash(%s archive:*)" % spelling for spelling in (
+            "ask-codex", "~/.claude/bin/ask-codex", "~/.local/bin/ask-codex",
+            "python3 ~/.claude/bin/ask-codex", "python3 -B ~/.claude/bin/ask-codex")}
         runner = ("remote-runner", "~/.claude/bin/remote-runner", "~/.local/bin/remote-runner",
                   "python3 ~/.claude/bin/remote-runner", "python3 -B ~/.claude/bin/remote-runner")
         expected |= {"Bash(%s %s:*)" % (spelling, sub) for spelling in runner

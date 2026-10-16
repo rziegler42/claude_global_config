@@ -29,12 +29,14 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
 
 HERE = Path(__file__).resolve()
 TOOL_HOME = HERE.parent.parent / "codex-approver"
 INSTALLED_HELPER = HERE.parent.parent / "bin" / "claude-workflow"
-INSTALLED_TOOLS = {"claude-workflow": INSTALLED_HELPER, "remote-runner": HERE.parent.parent / "bin" / "remote-runner"}
+INSTALLED_TOOLS = {"claude-workflow": INSTALLED_HELPER, "remote-runner": HERE.parent.parent / "bin" / "remote-runner",
+                   "ask-codex": HERE.parent.parent / "bin" / "ask-codex"}
 
 # The spellings the settings `ask` rules list for claude-workflow, matched on the raw
 # command text before any tokenizing, so the executable word can never be quoted.
@@ -48,12 +50,14 @@ SPELLINGS = (
 # The same five spellings for the owner's other helper, and plain `git` (push only; any flag before the
 # subcommand, a path, or a quoted word fails the raw-text match).
 REMOTE_RUNNER_SPELLINGS = tuple(spelling.replace("claude-workflow", "remote-runner") for spelling in SPELLINGS)
+ASK_CODEX_SPELLINGS = tuple(spelling.replace("claude-workflow", "ask-codex") for spelling in SPELLINGS)
 GIT_SPELLINGS = ("git",)
 SPELLING_TOOL = dict(
     [(spelling, "claude-workflow") for spelling in SPELLINGS]
     + [(spelling, "remote-runner") for spelling in REMOTE_RUNNER_SPELLINGS]
+    + [(spelling, "ask-codex") for spelling in ASK_CODEX_SPELLINGS]
     + [(spelling, "git") for spelling in GIT_SPELLINGS])
-SUPPORTED_TOOLS = ("claude-workflow", "remote-runner", "git")
+SUPPORTED_TOOLS = ("claude-workflow", "remote-runner", "ask-codex", "git")
 # How many positional words a rule accepts: (minimum, maximum or None).
 POSITIONAL_COUNTS = {"paths": (1, None), "none": (0, 0), "one": (1, 1), "up-to-two": (0, 2), "two-or-more": (2, None)}
 VERDICT_WORDS = ("approve", "decline", "no_verdict")
@@ -1404,8 +1408,86 @@ def collect_prune(ctx):
             "secret_hits": []}
 
 
+# -- ask-codex facts (the installed `ask-codex status`: local, read-only, verifies its own state seal) --
+
+STATUS_TIMEOUT = 8
+STATUS_OUTPUT_CAP = 256 * 1024
+PENDING_CAP = 50
+
+
+def collect_archive(ctx):
+    args, root = ctx["args"], ctx["root"]
+    helper = ctx["helper"]
+    plan = args["--plan"]
+    facts = {"plan_argument": plan[:200] if plan else None, "status_ok": False, "status_error": None,
+             "state_found": False, "closed": None, "rounds_used": None, "bound": None, "blocked": None,
+             "pending_decisions": [], "pending_count": None, "grants": [], "secret_hits": []}
+    if secret_kind(plan or "") == "pattern":
+        facts["secret_hits"].append({"path": "<plan-argument>", "kind": "pattern"})
+    boundary = helper.repository_boundary(root)
+    python, _why = find_on_path("python3", os.environ.get("PATH", ""), str(root))
+    if python is None or is_inside(python, boundary):
+        facts["status_error"] = "no_trusted_python"
+        return facts
+    argv = [python, "-B", str(INSTALLED_TOOLS["ask-codex"]), "status"] + (["--plan=" + plan] if plan else [])
+    env = {name: os.environ[name] for name in ENV_PASS if name in os.environ}
+    env.update({name: value for name, value in os.environ.items() if name.startswith("GIT_")})
+    env["PATH"] = os.pathsep.join(helper.trusted_path_entries(boundary) or ["/usr/bin", "/bin"])
+    try:
+        process = subprocess.Popen(argv, cwd=str(root), env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        facts["status_error"] = "status_not_started"
+        return facts
+    captured = []
+    reader = threading.Thread(target=lambda: captured.append(process.stdout.read(STATUS_OUTPUT_CAP + 1)),
+                              daemon=True)
+    try:
+        reader.start()
+        reader.join(STATUS_TIMEOUT)  # a hostile .debug (a FIFO, say) can hang status; a blocking read would not time out
+        if reader.is_alive():
+            facts["status_error"] = "status_timeout"
+            return facts
+        raw = captured[0] if captured else b""
+        code = process.wait(timeout=STATUS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        facts["status_error"] = "status_failed"
+        return facts
+    finally:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)  # the whole group, so no grandchild outlives the hook
+        process.wait()
+        reader.join(2)
+        process.stdout.close()
+    try:
+        data = json.loads(raw.decode("utf-8")) if len(raw) <= STATUS_OUTPUT_CAP else None
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        data = None
+    if code != 0 or not isinstance(data, dict) or data.get("status") != "ok":
+        reason = data.get("reason") if isinstance(data, dict) else None
+        facts["status_error"] = (reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,40}", reason)
+                                 else "status_unusable")
+        return facts
+    facts["status_ok"] = True
+    facts["state_found"] = isinstance(data.get("state_dir"), str)
+    for key in ("closed", "blocked"):
+        value = data.get(key)
+        facts[key] = value[:120] if isinstance(value, str) else (None if value is None else bool(value))
+    for key in ("rounds_used", "bound"):
+        value = data.get(key)
+        facts[key] = value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 10**6 else None
+    pending = data.get("pending_decisions")
+    pending = [item[:40] for item in pending if isinstance(item, str)] if isinstance(pending, list) else []
+    facts["pending_count"], facts["pending_decisions"] = len(pending), pending[:PENDING_CAP]
+    grants = data.get("grants")
+    facts["grants"] = [str(item.get("type"))[:20] for item in grants[:20] if isinstance(item, dict)] \
+        if isinstance(grants, list) else []
+    return facts
+
+
 COLLECTORS = {"commit": collect_commit, "remove": collect_remove, "push": collect_push,
-              "submit": collect_submit, "fetch": collect_fetch, "cancel": collect_cancel, "prune": collect_prune}
+              "submit": collect_submit, "fetch": collect_fetch, "cancel": collect_cancel, "prune": collect_prune,
+              "archive": collect_archive}
 
 
 # -- deterministic checks --------------------------------------------------------------
@@ -1603,6 +1685,11 @@ def check_retention_valid(facts):
     return facts["retention_valid"], "the retention periods are not finite non-negative numbers"
 
 
+def check_status_ok(facts):
+    return facts["status_ok"] and facts["state_found"], "no verified review state for this plan (%s)" % (
+        facts["status_error"] or "none found")
+
+
 CHECKS = {
     "head_matches": check_head_matches, "staging_state_ok": check_staging_state_ok,
     "paths_valid": check_paths_valid, "message_valid": check_message_valid,
@@ -1620,7 +1707,7 @@ CHECKS = {
     "job_remote_configured": check_job_remote_configured, "job_in_this_project": check_job_in_this_project,
     "fetch_paths_valid": check_fetch_paths_valid, "no_fetch_force": check_no_fetch_force,
     "fetch_targets_safe": check_fetch_targets_safe, "prune_remote_configured": check_prune_remote_configured,
-    "retention_valid": check_retention_valid,
+    "retention_valid": check_retention_valid, "status_ok": check_status_ok,
 }
 
 

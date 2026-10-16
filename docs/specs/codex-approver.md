@@ -149,8 +149,8 @@ Initial deterministic checks:
 
 ### Advice for push and remote-runner
 
-Six further rules log advice only, for `git push` and `remote-runner submit`, `fetch`, `cancel` and `prune`
-(`git` matches only the bare word; `remote-runner` in the five spellings the settings list). They exist to measure
+Five further rules log advice only, for `git push`, `remote-runner submit`, `fetch`, `cancel` and `prune`, and `ask-codex archive`
+(`git` matches only the bare word; `remote-runner` and `ask-codex` in the five spellings the settings list). They exist to measure
 how often Codex and the owner agree, as `--report` shows per rule. Their collectors use local files and Git state
 only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Facts about the remote's current state
 (whether a job exists or runs, what the remote branch holds) are absent, and each rubric section says so.
@@ -169,6 +169,12 @@ only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Fac
 - cancel: a well-formed job on a configured remote that belongs to this repository's project.
 - prune: a configured remote and finite, non-negative retention periods; `--apply` and shortened retention are facts
   for the reviewer.
+
+- archive: `ask-codex archive [--plan <file>]` closes a plan review. The collector runs the installed
+  `ask-codex status`, a local read-only command that verifies the review state's seal itself, under the hardened Git
+  environment with a timeout and an output cap, and keeps rounds used, the bound, any block, owner grants, `closed`
+  and the ids of undecided blocker or major findings. The hook never reads the seal key or the round files. A missing
+  or unverifiable review state declines; an unfinished review is a fact for the reviewer.
 
 None of these rules approves anything. The hook still prints no decision.
 

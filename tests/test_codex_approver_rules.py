@@ -847,7 +847,8 @@ class RegistryTests(unittest.TestCase):
         rules = ca.load_rules(RULES, known_collectors=ca.COLLECTORS, known_checks=ca.CHECKS)
         self.assertEqual({r["id"] for r in rules}, {"claude-workflow-commit", "claude-workflow-remove", "git-push",
                                               "remote-runner-submit", "remote-runner-fetch",
-                                              "remote-runner-cancel", "remote-runner-prune"})
+                                              "remote-runner-cancel", "remote-runner-prune",
+                                              "ask-codex-archive"})
 
 
 if __name__ == "__main__":

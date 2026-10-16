@@ -57,8 +57,8 @@ in `codex-approver/`.
 - **A `PreToolUse` hook.** Fires on every call in every mode and costs a check
   per call, while `PermissionRequest` sees exactly the prompted actions.
   Rejected.
-- **Advice for more commands, still no authority.** `git push` and
-  `remote-runner submit|fetch|cancel|prune` have advice-only rules, so the log
+- **Advice for more commands, still no authority.** `git push`,
+  `remote-runner submit|fetch|cancel|prune` and `ask-codex archive` have advice-only rules, so the log
   and `--report` can show whether Codex and the owner agree before anyone
   considers delegating them. Their collectors use local facts only (no SSH or
   network), and the spec's earlier "push stays with the owner permanently" is
@@ -100,7 +100,7 @@ in `codex-approver/`.
 `tests/test_codex_approver_engine.py`, `tests/test_codex_approver_rules.py`,
 `tests/test_codex_approver_codex.py` (a fake Codex),
 `tests/test_codex_approver_tools.py`, `tests/test_codex_approver_push.py`,
-`tests/test_codex_approver_runner.py` and
+`tests/test_codex_approver_runner.py`, `tests/test_codex_approver_archive.py` and
 `tests/test_codex_approver_wiring.py`, plus a live check of the rubric with the
 real Codex on seven hand-built cases. The review record is in
 `docs/plans/next.md` until archived.

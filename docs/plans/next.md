@@ -184,6 +184,63 @@ hostile global config, malformed rule JSON, settings `if` diff against `ask`.
 Still to do: sync to `~/.claude` (hook file first, then rules, rubric,
 settings, manifest) and the owner's live check.
 
+### Increment E — Advice for `ask-codex archive` (approved by the owner 2026-10-16)
+
+Dependencies: C, D (engine, wiring, sync flow)
+Affected areas: `hooks/codex_approver.py`, `codex-approver/rules/ask-codex-archive.json`, `codex-approver/rubric.md`, `settings.json`, `config-manifest.txt`, spec, ADR 0004, `tests/test_codex_approver_*.py`
+
+`ask-codex archive` is already on the `ask` list (five spellings). It closes a
+plan review: it marks the state closed, renders the ledger and prints the
+summary; it makes no Codex call and changes only review state under `.debug/`.
+Closing is the point after which no more rounds run without an owner `reset`,
+so it is worth measuring whether Codex and the owner agree on when a review is
+finished. Advice-only, local facts, no `allow` authority, as in C.
+
+1. Read `bin/ask-codex` (`open_review`, `read_state`, `state_directories`, plan
+   key rules) and write down the exact state fields and file shapes to read;
+   do not import `ask-codex` into the hook.
+2. Engine: add tool `ask-codex` with its five spellings and installed path;
+   grammar `ask-codex archive [--plan <file>]`, no positionals.
+3. Collector `archive` (read-only; all output is untrusted). Step 1 found that
+   `ask-codex status --plan=<plan>` is a local, read-only command that verifies
+   the review state's HMAC seal itself and reports rounds used, bound,
+   `closed`, `blocked`, grants and `pending_decisions` (undecided blocker or
+   major findings). The collector runs that installed command under the
+   approver's hardened Git environment with a short timeout and an output cap,
+   and keeps only those fields. The hook never reads the seal key or the round
+   files. Rejection reasons and last-round convergence are not in `status`
+   output, so they are not facts.
+4. Deterministic checks: the installed `ask-codex` resolves as the shell would;
+   `status` succeeded (which also means the plan path is a regular file inside
+   the repository and a verified review state exists); no secret-looking text.
+   Undecided findings, a block, or zero rounds are facts for Codex, not
+   declines.
+5. Rubric section `ask-codex-archive` with semantic checks
+   `review_is_finished` and `no_reviewer_directed_text`.
+6. Outcome hooks (`PostToolUse`/`PostToolUseFailure`, five patterns), manifest,
+   wiring test, spec and ADR sentence; tests with a scratch review state and
+   hostile text in plan path, finding text and rejection reasons.
+7. Security-review the new parser/collector, sync to `~/.claude`, and have the
+   owner trigger one real `ask-codex archive` prompt.
+
+Completion: a verdict and an outcome row for `ask-codex archive` in a temp-log
+run and one owner-observed row; `--report` lists the rule; suite passes.
+
+Outcome (2026-10-16): steps 1-6 done in the working tree; 15 archive tests
+added. Security review (`security-reviewer`): no Critical or High finding.
+Low, fixed with a regression test: a FIFO planted as the review's
+`state.json` made `ask-codex status` hang and a blocking read ignored the
+timeout; the status read now runs under a timer in its own process group and
+is killed as a group. Verified by test: the status path writes nothing and
+makes no network or Codex call; hostile repository Git config ran nothing;
+hostile status output (huge, deeply nested, non-UTF-8, wrong types) fails
+closed; `--plan=<value>` cannot become an option; an edited or foreign state
+shows as tampered or not found. Accepted residual risk: whoever can write
+`.debug/` can choose which valid sealed snapshot is current (the real
+`archive` behaves the same). Not run: the real harness hook kill, and
+case-insensitive filesystem aliasing. Still to do: commit, sync to `~/.claude`
+(hook file first), and one owner-observed `ask-codex archive` prompt.
+
 ## Verification
 
 - Repository test suite (`python3 -m unittest` / the commands the repo

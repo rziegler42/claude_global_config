@@ -47,6 +47,7 @@ ask-codex/kinds/plan-review/schema.json
 codex-approver/config.json
 codex-approver/rubric.md
 codex-approver/verdict.schema.json
+codex-approver/rules/ask-codex-archive.json
 codex-approver/rules/claude-workflow-commit.json
 codex-approver/rules/claude-workflow-remove.json
 codex-approver/rules/git-push.json

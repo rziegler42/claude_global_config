@@ -362,6 +362,36 @@
             "if": "Bash(python3 -B ~/.claude/bin/remote-runner prune:*)",
             "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
           }
         ]
       }
@@ -553,6 +583,36 @@
           {
             "type": "command",
             "if": "Bash(python3 -B ~/.claude/bin/remote-runner prune:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.claude/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(~/.local/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 ~/.claude/bin/ask-codex archive:*)",
+            "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -B ~/.claude/bin/ask-codex archive:*)",
             "command": "/bin/sh -c 'set -f; IFS=:; for d in $PATH; do case \"$d\" in /*) if [ -x \"$d/python3\" ]; then exec \"$d/python3\" -B \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/codex_approver.py\"; fi;; esac; done; exit 0'",
             "timeout": 10
           }
