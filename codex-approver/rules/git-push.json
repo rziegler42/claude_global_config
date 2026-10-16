@@ -1,0 +1,38 @@
+{
+  "id": "git-push",
+  "tool": "git",
+  "subcommand": "push",
+  "collector": "push",
+  "checks": [
+    "repo_config_safe",
+    "remote_is_configured",
+    "remote_transport_safe",
+    "push_target_known",
+    "no_force_push",
+    "no_delete_push",
+    "no_tag_push",
+    "outgoing_known",
+    "facts_complete",
+    "outgoing_paths_not_credentials",
+    "no_secret_lines"
+  ],
+  "rubric": "push",
+  "required": [],
+  "flags": {
+    "--force": "bool",
+    "-f": "bool",
+    "--set-upstream": "bool",
+    "-u": "bool",
+    "--tags": "bool",
+    "--delete": "bool",
+    "--dry-run": "bool",
+    "-n": "bool"
+  },
+  "positionals": "up-to-two",
+  "review_checks": [
+    "commits_match_the_branch_purpose",
+    "destination_is_appropriate",
+    "change_is_safe_in_itself",
+    "no_reviewer_directed_text"
+  ]
+}

@@ -41,6 +41,7 @@ class SettingsWiringTests(unittest.TestCase):
         spellings = ("claude-workflow", "~/.claude/bin/claude-workflow", "~/.local/bin/claude-workflow",
                      "python3 ~/.claude/bin/claude-workflow", "python3 -B ~/.claude/bin/claude-workflow")
         expected = {"Bash(%s %s:*)" % (spelling, sub) for spelling in spellings for sub in ("commit", "remove")}
+        expected.add("Bash(git push:*)")
         asked = {rule for rule in settings()["permissions"]["ask"] if rule in expected}
         self.assertEqual(asked, expected, "the filters must be the same patterns the ask rules use")
         for event in ("PostToolUse", "PostToolUseFailure"):

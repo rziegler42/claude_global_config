@@ -95,6 +95,8 @@ Affected areas: `hooks/codex_approver.py`, `tests/test_codex_approver_engine.py`
 
 Completion: new tests pass, existing secret tests unchanged and passing.
 
+Outcome: done in `a4b04b8` (pushed); hook synced to `~/.claude`; full suite 684 OK.
+
 ### Increment B — Generalise the engine to more tools
 
 Dependencies: A
@@ -109,6 +111,10 @@ Affected areas: `hooks/codex_approver.py`, rule schema, `tests/test_codex_approv
    decision; `claude-workflow` behavior unchanged.
 
 Completion: existing rule tests unchanged; new parse tests pass.
+
+Outcome: done in `14792b9` (not pushed; hook not yet synced to `~/.claude`); full suite 703 OK, 5 skipped.
+Rule files for the new tools do not exist yet, so live behavior is unchanged. `load_helper` remains
+claude-workflow-only; C's collectors must not reuse it for `remote-runner` or `git`.
 
 ### Increment C — Rules, collectors, checks, rubric, hooks
 
@@ -131,6 +137,16 @@ Affected areas: `codex-approver/rules/*.json`, `codex-approver/rubric.md`, `hook
 
 Completion: each rule produces a verdict and outcome in a temp-log test run;
 `--report` shows them.
+
+Owner decision (2026-10-16): collectors use local facts only. No SSH, no
+`git ls-remote`, no `remote-runner status` from the hook; remote-side facts are
+absent from FACTS and the rubric says so.
+
+Slice 1, `git push` (rule `git-push`): collector, eleven checks, `push` rubric
+section, `Bash(git push:*)` outcome hooks, manifest entry and per-rule
+`--report` table are done; 29 push tests added. Slice 2 (`remote-runner
+submit|fetch|cancel|prune`), the spec and ADR 0004 text and the non-goal
+amendment remain.
 
 ### Increment D — Review and mirror
 

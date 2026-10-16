@@ -49,4 +49,5 @@ codex-approver/rubric.md
 codex-approver/verdict.schema.json
 codex-approver/rules/claude-workflow-commit.json
 codex-approver/rules/claude-workflow-remove.json
+codex-approver/rules/git-push.json
 skills/second-opinion/SKILL.md

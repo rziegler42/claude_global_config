@@ -604,20 +604,42 @@ def has_secret(text):
     return secret_kind(text) is not None
 
 
-def git_bytes(helper, root, argv, timeout=10):
-    """Run git with the helper's trusted PATH and return raw stdout bytes (None on failure)."""
+def git_bytes(helper, root, argv, timeout=10, user_config=False, limit=None):
+    """Run git with the helper's trusted PATH and return raw stdout bytes (None on failure).
+
+    `user_config` lets Git also read the owner's global and system configuration, for read-only
+    questions such as "what would `git push` do"; repository configuration is read either way.
+    `limit` stops reading after that many bytes (the result is then `limit + 1` bytes long).
+    """
     boundary = helper.repository_boundary(root)
     git = helper.trusted_which("git", boundary)
     if git is None:
         return None
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join(helper.trusted_path_entries(boundary) or ["/usr/bin", "/bin"])
+    if user_config:
+        env.pop("GIT_CONFIG_GLOBAL", None)
+        env.pop("GIT_CONFIG_NOSYSTEM", None)
     try:
-        result = subprocess.run([git, *argv], cwd=str(root), env=env, capture_output=True, timeout=timeout,
-                                stdin=subprocess.DEVNULL)
+        if limit is None:
+            result = subprocess.run([git, *argv], cwd=str(root), env=env, capture_output=True, timeout=timeout,
+                                    stdin=subprocess.DEVNULL)
+            return result.stdout if result.returncode == 0 else None
+        process = subprocess.Popen([git, *argv], cwd=str(root), env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
-    return result.stdout if result.returncode == 0 else None
+    try:
+        data = process.stdout.read(limit + 1)
+        if len(data) > limit:
+            return data
+        return data if process.wait(timeout=timeout) == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        process.kill()
+        process.wait()
+        process.stdout.close()
 
 
 def read_worktree_file(root, path):
@@ -861,7 +883,263 @@ def collect_remove(ctx):
     return facts
 
 
-COLLECTORS = {"commit": collect_commit, "remove": collect_remove}
+# -- git push facts (local only: nothing here contacts a remote) ------------------------
+
+MAX_REFSPECS = 8
+MAX_OUTGOING_COMMITS = 30
+OUTGOING_MESSAGE_CAP = 2000
+OUTGOING_PATH_CAP = 200
+OUTGOING_DIFF_CAP = DIFF_CAP_TOTAL
+REF_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@-]{0,199}")
+SCHEME_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://([^/]*)(/.*)?")
+SCP_URL_RE = re.compile(r"(?:([^@/:\s]+)@)?([A-Za-z0-9][A-Za-z0-9._-]*):(?!:)(.*)", re.S)
+SAFE_TRANSPORTS = ("https", "http", "ssh", "git", "file", "local")
+# Settings that make a real `git push` run a repository-chosen program, beyond the commit set.
+PUSH_EXEC_KEY = re.compile(r"credential(\..*)?\.helper|core\.(gitproxy|askpass)|remote\..*\.(receivepack|vcs)|ssh\.variant")
+
+
+def remote_url_info(url):
+    """Classify a remote URL without keeping credentials: transport kind, host, userinfo flags."""
+    info = {"kind": "other", "host": None, "has_userinfo": False, "has_password": False}
+    if "::" in url:
+        return info  # a remote-helper transport such as ext:: or fd::
+    match = SCHEME_URL_RE.fullmatch(url)
+    if match:
+        scheme = match.group(1).lower()
+        userinfo, at, hostport = match.group(2).rpartition("@")
+        host = hostport[1:].split("]")[0] if hostport.startswith("[") else hostport.split(":")[0]
+        info.update(kind=scheme if scheme in SAFE_TRANSPORTS and scheme != "local" else "other:" + scheme[:16],
+                    host=host[:200] or None, has_userinfo=bool(at), has_password=":" in userinfo)
+        return info
+    if url.startswith(("/", "./", "../")):
+        info["kind"] = "local"
+        return info
+    match = SCP_URL_RE.fullmatch(url)
+    if match:
+        info.update(kind="ssh", host=match.group(2)[:200])
+    return info
+
+
+def config_map(helper, root):
+    """All Git configuration the real `git push` would see, as {lowercased-section/key: [values]}."""
+    raw = git_bytes(helper, root, ["config", "--list", "-z"], user_config=True, limit=READ_CAP)
+    if raw is None or len(raw) > READ_CAP:
+        return None
+    values = {}
+    for entry in raw.decode("utf-8", "replace").split("\0"):
+        if not entry:
+            continue
+        key, newline, value = entry.partition("\n")
+        section, dot, rest = key.partition(".")
+        if "." in rest:  # section.subsection.variable: the subsection keeps its case
+            subsection, _, variable = rest.rpartition(".")
+            name = "%s.%s.%s" % (section.lower(), subsection, variable.lower())
+        else:
+            name = key.lower()
+        values.setdefault(name, []).append(value if newline else "true")
+    return values
+
+
+def config_flag(values, key):
+    last = values.get(key, [None])[-1]
+    return last is not None and last.strip().lower() in TRUTHY
+
+
+def parse_refspec(raw, current_ref, forced_by_flag, delete_flag):
+    """One push refspec -> a plain description. Nothing here resolves anything."""
+    spec = {"raw": raw[:200], "force": forced_by_flag, "delete": delete_flag, "wildcard": "*" in raw,
+            "src": None, "dst": None, "error": None}
+    text = raw
+    if text.startswith("+"):
+        spec["force"], text = True, text[1:]
+    if delete_flag:
+        text = ":" + text
+    src, colon, dst = text.partition(":")
+    if text == "HEAD" or (src == "HEAD" and not colon):
+        src, dst = "HEAD", ""
+    if colon and not src:
+        spec["delete"] = True
+    if not REF_NAME_RE.fullmatch(src or "x") or (dst and not REF_NAME_RE.fullmatch(dst)):
+        spec["error"] = "refspec_shape"
+        return spec
+    if colon and not dst and src:
+        spec["error"] = "empty_destination"
+        return spec
+    spec["src"] = src or None
+    spec["dst"] = dst or (src if src and src != "HEAD" else None)
+    if src == "HEAD":
+        spec["dst"] = dst or None
+    return spec
+
+
+def resolve_refspec(helper, root, spec, current_branch):
+    """Fill in full refs and the source commit; mark anything that cannot be resolved plainly."""
+    spec.update(src_ref=None, src_oid=None, dst_ref=None, dst_is_tag=False, src_resolved=False)
+    if spec["error"]:
+        return spec
+    src = spec["src"]
+    if src is not None:
+        ref = ("refs/heads/" + current_branch if current_branch else None) if src == "HEAD" else (
+            src if src.startswith("refs/") else "refs/heads/" + src)
+        if ref and ref.startswith("refs/heads/"):
+            out = git_bytes(helper, root, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"])
+            oid = out.decode("ascii", "replace").strip() if out else ""
+            if re.fullmatch(r"[0-9a-f]{40,64}", oid):
+                spec.update(src_ref=ref, src_oid=oid, src_resolved=True)
+        elif ref and ref.startswith("refs/tags/"):
+            spec["dst_is_tag"] = True
+    dst = spec["dst"] or (spec["src_ref"] and spec["src_ref"][len("refs/heads/"):])
+    if dst:
+        spec["dst_ref"] = dst if dst.startswith("refs/") else "refs/heads/" + dst
+        spec["dst_is_tag"] = spec["dst_is_tag"] or spec["dst_ref"].startswith("refs/tags/")
+    return spec
+
+
+def effective_refspecs(args, values, remote, branch):
+    """The refspecs a real `git push <args>` would use (local reading of the same rules Git applies)."""
+    positional = args["paths"]
+    force, delete = args["--force"] or args["-f"], args["--delete"]
+    if len(positional) > 1:
+        return [parse_refspec(positional[1], branch, force, delete)], None
+    if delete:
+        return [], "delete_without_refspec"
+    configured = values.get("remote.%s.push" % remote, []) if remote else []
+    if configured:
+        return [parse_refspec(item, branch, force, False) for item in configured[:MAX_REFSPECS + 1]], None
+    mode = (values.get("push.default", ["simple"])[-1] or "simple").strip().lower()
+    if not branch:
+        return [], "detached_head"
+    if mode in ("simple", "current"):
+        merge = values.get("branch.%s.merge" % branch, [None])[-1]
+        if mode == "simple" and merge and merge.startswith("refs/heads/") and merge[11:] != branch:
+            return [], "simple_upstream_name_differs"
+        return [parse_refspec(branch, branch, force, False)], None
+    if mode == "upstream":
+        merge = values.get("branch.%s.merge" % branch, [None])[-1]
+        if not merge or not merge.startswith("refs/heads/"):
+            return [], "no_upstream"
+        return [parse_refspec("%s:%s" % (branch, merge[11:]), branch, force, False)], None
+    return [], "push_default_" + mode[:20]
+
+
+def outgoing_facts(helper, root, remote, specs):
+    """Commits, paths and diff text that would be new to `remote`: reachable from the pushed
+    commits but from no remote-tracking branch of it. Local refs only; the state at the last fetch."""
+    refs = sorted({spec["src_ref"] for spec in specs if spec.get("src_oid")})
+    result = {"base": "commits on no remote-tracking branch of the remote, as of its last fetch",
+              "known": False, "count": None, "commits": [], "paths": [], "paths_truncated": False,
+              "truncated": False, "binary": False, "secret_kind": None}
+    if not refs or not remote:
+        return result, ""
+    scope = refs + ["--not", "--remotes=" + remote]
+    count = git_bytes(helper, root, ["rev-list", "--count", *scope])
+    log = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "-n", str(MAX_OUTGOING_COMMITS),
+                                   "--format=%H%x1f%B%x1e", *scope], limit=READ_CAP)
+    names = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "--no-renames", "--name-only", "-z", "--format=",
+                                     "-n", "200", *scope], limit=READ_CAP)
+    patch = git_bytes(helper, root, ["log", "--no-color", "--no-show-signature", "--no-ext-diff", "--no-textconv", "--no-renames",
+                                     "-p", "--format=", "-n", "200", *scope], limit=OUTGOING_DIFF_CAP)
+    if None in (count, log, names, patch) or not count.strip().isdigit():
+        return result, ""
+    result["count"] = int(count.strip())
+    for item in log.decode("utf-8", "replace").split("\x1e"):
+        sha, _, message = item.strip("\n").partition("\x1f")
+        if sha:
+            result["commits"].append({"sha": sha[:12], "message": message[:OUTGOING_MESSAGE_CAP]})
+    seen = []
+    for path in names.decode("utf-8", "replace").split("\0"):
+        if path and path not in seen:
+            seen.append(path)
+    result["paths_truncated"] = len(seen) > OUTGOING_PATH_CAP
+    result["paths"] = seen[:OUTGOING_PATH_CAP]
+    result["truncated"] = (len(patch) > OUTGOING_DIFF_CAP or len(log) > READ_CAP or len(names) > READ_CAP
+                           or result["count"] > MAX_OUTGOING_COMMITS)
+    text = patch.decode("utf-8", "replace")
+    result["binary"] = "\0" in text or text.startswith("Binary files ") or "\nBinary files " in text
+    result["known"] = True
+    return result, text
+
+
+def collect_push(ctx):
+    helper, root, args = ctx["helper"], ctx["root"], ctx["args"]
+    values = config_map(helper, root)
+    facts = {"flags": {"force": args["--force"] or args["-f"], "delete": args["--delete"],
+                       "tags": args["--tags"], "set_upstream": args["--set-upstream"] or args["-u"],
+                       "dry_run": args["--dry-run"] or args["-n"]},
+             "remote_argument": None, "refspec_argument": None, "remote": None, "remote_configured": False,
+             "remote_source": None, "urls": [], "branch": None, "default_branch": None, "config": {},
+             "refspecs": [], "refspec_error": None, "outgoing": None, "outgoing_paths": [],
+             "exec_config": repo_exec_findings(helper, root), "secret_hits": [], "truncated": False,
+             "binary": False, "config_error": None}
+    if values is None:
+        facts["config_error"] = "config_unreadable"
+        return facts
+    repo_only = git_bytes(helper, root, ["config", "--list", "-z"]) or b""
+    facts["exec_config"] = sorted(set(facts["exec_config"]) | {
+        entry.partition("\n")[0] for entry in repo_only.decode("utf-8", "replace").split("\0")
+        if PUSH_EXEC_KEY.fullmatch(entry.partition("\n")[0].lower())})
+    positional = args["paths"]
+    facts["remote_argument"] = positional[0][:200] if positional else None
+    facts["refspec_argument"] = positional[1][:200] if len(positional) > 1 else None
+    branch_out = git_bytes(helper, root, ["symbolic-ref", "-q", "--short", "HEAD"])
+    branch = branch_out.decode("utf-8", "replace").strip() if branch_out else None
+    facts["branch"] = branch
+    names = set((git_bytes(helper, root, ["remote"]) or b"").decode("utf-8", "replace").split())
+    if positional:
+        remote, source = positional[0], "argument"
+    elif branch and values.get("branch.%s.pushremote" % branch):
+        remote, source = values["branch.%s.pushremote" % branch][-1], "branch pushRemote"
+    elif values.get("remote.pushdefault"):
+        remote, source = values["remote.pushdefault"][-1], "remote.pushDefault"
+    elif branch and values.get("branch.%s.remote" % branch):
+        remote, source = values["branch.%s.remote" % branch][-1], "branch upstream remote"
+    else:
+        remote, source = "origin", "default"
+    facts["remote"], facts["remote_source"] = remote[:200], source
+    facts["remote_configured"] = remote in names
+    facts["config"] = {
+        "push_default": (values.get("push.default", ["simple"])[-1] or "simple")[:20],
+        "follow_tags": config_flag(values, "push.followtags"),
+        "mirror": config_flag(values, "remote.%s.mirror" % remote),
+        "remote_push": [item[:200] for item in values.get("remote.%s.push" % remote, [])[:MAX_REFSPECS]],
+    }
+    if facts["remote_configured"]:
+        url_out = git_bytes(helper, root, ["remote", "get-url", "--push", "--all", remote], user_config=True)
+        for url in (url_out or b"").decode("utf-8", "replace").splitlines()[:4]:
+            info = remote_url_info(url)
+            if secret_kind(url) == "pattern":  # entropy would flag ordinary temporary-directory paths
+                facts["secret_hits"].append({"path": "<remote-url>", "kind": "pattern"})
+            facts["urls"].append(info)
+        head = git_bytes(helper, root, ["symbolic-ref", "-q", "--short", "refs/remotes/%s/HEAD" % remote])
+        default = head.decode("utf-8", "replace").strip() if head else ""
+        facts["default_branch"] = default[len(remote) + 1:] if default.startswith(remote + "/") else None
+    specs, error = effective_refspecs(args, values, remote, branch)
+    facts["refspec_error"] = error
+    if len(specs) > MAX_REFSPECS:
+        specs, facts["refspec_error"] = specs[:MAX_REFSPECS], "too_many_refspecs"
+    specs = [resolve_refspec(helper, root, spec, branch) for spec in specs]
+    for spec in specs:
+        spec["dst_is_default"] = None if not (spec["dst_ref"] and facts["default_branch"]) else (
+            spec["dst_ref"] == "refs/heads/" + facts["default_branch"])
+    facts["refspecs"] = specs
+    outgoing, text = outgoing_facts(helper, root, remote if facts["remote_configured"] else None, specs)
+    facts["outgoing"] = {key: outgoing[key] for key in ("base", "known", "count", "commits")}
+    facts["outgoing_paths"] = outgoing["paths"]
+    facts["truncated"], facts["binary"] = outgoing["truncated"] or outgoing["paths_truncated"], outgoing["binary"]
+    for item in outgoing["commits"]:
+        kind = secret_kind(item["message"])
+        if kind:
+            facts["secret_hits"].append({"path": "<message:%s>" % item["sha"], "kind": kind})
+            item["message"] = "<withheld: secret-looking content>"
+    kind = secret_kind(text)
+    if kind:
+        facts["secret_hits"].append({"path": "<outgoing diff>", "kind": kind})
+        facts["outgoing"]["commits"] = [dict(item, message="<withheld: secret-looking content>")
+                                        for item in facts["outgoing"]["commits"]]
+    return facts
+
+
+COLLECTORS = {"commit": collect_commit, "remove": collect_remove, "push": collect_push}
 
 
 # -- deterministic checks --------------------------------------------------------------
@@ -935,6 +1213,52 @@ def check_no_git_metadata(facts):
     return not bad, "git metadata"
 
 
+def check_remote_is_configured(facts):
+    ok = facts["remote_configured"] and (facts["remote_argument"] is None
+                                         or facts["remote_argument"] == facts["remote"])
+    return ok, "the remote is not a configured remote name"
+
+
+def check_remote_transport_safe(facts):
+    urls = facts["urls"]
+    bad = not urls or any(item["kind"] not in SAFE_TRANSPORTS or item["has_password"]
+                          or (item["has_userinfo"] and item["kind"] in ("http", "https")) for item in urls)
+    return not bad, "the remote URL uses an unusual transport or embeds credentials"
+
+
+def check_no_force_push(facts):
+    forced = (facts["flags"]["force"] or facts["config"].get("mirror")
+              or any(spec["force"] for spec in facts["refspecs"]))
+    return not forced, "the push would overwrite remote history"
+
+
+def check_no_delete_push(facts):
+    return not (facts["flags"]["delete"] or any(spec["delete"] for spec in facts["refspecs"])), "the push deletes a ref"
+
+
+def check_no_tag_push(facts):
+    tagged = (facts["flags"]["tags"] or facts["config"].get("follow_tags")
+              or any(spec["dst_is_tag"] for spec in facts["refspecs"]))
+    return not tagged, "the push would publish tags"
+
+
+def check_push_target_known(facts):
+    specs = facts["refspecs"]
+    ok = (facts["refspec_error"] is None and facts["config_error"] is None and bool(specs) and all(
+        spec["src_resolved"] and spec["dst_ref"] and spec["dst_ref"].startswith("refs/heads/")
+        and not spec["wildcard"] and spec["error"] is None for spec in specs))
+    return ok, "the pushed branches could not be determined (%s)" % (facts["refspec_error"] or "unresolved")
+
+
+def check_outgoing_known(facts):
+    return bool(facts["outgoing"] and facts["outgoing"]["known"]), "the outgoing commits could not be listed"
+
+
+def check_outgoing_paths_not_credentials(facts):
+    bad = [path for path in facts["outgoing_paths"] if credential_path(path)]
+    return not bad, "an outgoing commit touches a credential-looking path"
+
+
 CHECKS = {
     "head_matches": check_head_matches, "staging_state_ok": check_staging_state_ok,
     "paths_valid": check_paths_valid, "message_valid": check_message_valid,
@@ -942,6 +1266,10 @@ CHECKS = {
     "facts_complete": check_facts_complete, "no_secret_lines": check_no_secret_lines,
     "repo_config_safe": check_repo_config_safe, "ignore_status_known": check_ignore_status_known, "confirm_present": check_confirm_present, "removal_valid": check_removal_valid,
     "preview_matches_arguments": check_preview_matches_arguments, "no_git_metadata": check_no_git_metadata,
+    "remote_is_configured": check_remote_is_configured, "remote_transport_safe": check_remote_transport_safe,
+    "no_force_push": check_no_force_push, "no_delete_push": check_no_delete_push, "no_tag_push": check_no_tag_push,
+    "push_target_known": check_push_target_known, "outgoing_known": check_outgoing_known,
+    "outgoing_paths_not_credentials": check_outgoing_paths_not_credentials,
 }
 
 
@@ -1211,6 +1539,12 @@ def timed(rows, cutoff):
     return sorted(((ts, row) for ts, row in items if ts and (cutoff is None or ts >= cutoff)), key=lambda x: x[0])
 
 
+def rule_agreement(matrix):
+    agree = matrix["approve"]["ran"] + matrix["approve"]["ran_failed"] + matrix["decline"]["not_run"]
+    return {"matrix": matrix, "agree": agree,
+            "decided": sum(matrix["approve"].values()) + sum(matrix["decline"].values())}
+
+
 def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
     """Pair each verdict with the command that followed it (same session and command, within `window`)."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -1218,6 +1552,7 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
     verdict_rows, outcome_rows = timed(verdicts, cutoff), timed(outcomes, cutoff)
     used, pending, disagreements = set(), 0, []
     matrix = {kind: {"ran": 0, "ran_failed": 0, "not_run": 0} for kind in REPORT_DECISIONS}
+    by_rule = {}
     for ts, row in verdict_rows:
         kind = row.get("verdict")
         if kind not in matrix:
@@ -1239,6 +1574,8 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
         else:
             result = "not_run"
         matrix[kind][result] += 1
+        rule_id = row.get("rule") if isinstance(row.get("rule"), str) else "?"
+        by_rule.setdefault(rule_id, {k: {"ran": 0, "ran_failed": 0, "not_run": 0} for k in REPORT_DECISIONS})[kind][result] += 1
         if (kind == "approve" and result == "not_run") or (kind == "decline" and result != "not_run"):
             disagreements.append({
                 "ts": row.get("ts"), "rule": row.get("rule"), "verdict": kind, "outcome": result,
@@ -1248,6 +1585,7 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
     decided = sum(matrix["approve"].values()) + sum(matrix["decline"].values())
     return {"matrix": matrix, "pending": pending, "disagreements": disagreements,
             "unprompted": len(outcome_rows) - len(used), "agreement": {"agree": agree, "decided": decided},
+            "by_rule": {rule_id: rule_agreement(rows) for rule_id, rows in sorted(by_rule.items())},
             "days": days}
 
 
@@ -1268,6 +1606,12 @@ def format_report(report):
         lines += ["", "Agreement (approve -> ran, decline -> not run): %d of %d = %.0f%%" % (
             agreement["agree"], agreement["decided"], 100.0 * agreement["agree"] / agreement["decided"])]
     lines.append("Ran without a prompt (always-allowed or not covered): %d" % report["unprompted"])
+    if len(report["by_rule"]) > 1:
+        lines += ["", "%-28s %8s %8s %8s" % ("rule", "approve", "decline", "agreed")]
+        for rule_id, item in report["by_rule"].items():
+            lines.append("%-28s %8d %8d %8s" % (
+                rule_id[:28], sum(item["matrix"]["approve"].values()), sum(item["matrix"]["decline"].values()),
+                "%d/%d" % (item["agree"], item["decided"])))
     if report["disagreements"]:
         lines += ["", "Disagreements (the approver and your answer differed):"]
         for item in report["disagreements"][-20:]:
