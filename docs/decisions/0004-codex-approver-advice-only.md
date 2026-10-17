@@ -63,6 +63,11 @@ in `codex-approver/`.
   considers delegating them. Their collectors use local facts only (no SSH or
   network), and the spec's earlier "push stays with the owner permanently" is
   amended to "advice-only logging; any authority needs a separate ADR".
+- **A shape-only log of prompts no rule covers.** The hook already receives
+  every Bash prompt, so it records the shape (never arguments) of the ones
+  without a rule in `unmatched.jsonl`. The owner can then see which commands
+  keep prompting and which `allow` entries or rules would remove the most
+  prompts. It decides nothing.
 - **Project-level rules that widen trust.** A repository's own file is
   attacker-controlled. Deferred to a user-side registry that pins a file hash.
 
@@ -100,7 +105,8 @@ in `codex-approver/`.
 `tests/test_codex_approver_engine.py`, `tests/test_codex_approver_rules.py`,
 `tests/test_codex_approver_codex.py` (a fake Codex),
 `tests/test_codex_approver_tools.py`, `tests/test_codex_approver_push.py`,
-`tests/test_codex_approver_runner.py`, `tests/test_codex_approver_archive.py` and
+`tests/test_codex_approver_runner.py`, `tests/test_codex_approver_archive.py`,
+`tests/test_codex_approver_unmatched.py` and
 `tests/test_codex_approver_wiring.py`, plus a live check of the rubric with the
 real Codex on seven hand-built cases. The review record is in
 `docs/plans/next.md` until archived.

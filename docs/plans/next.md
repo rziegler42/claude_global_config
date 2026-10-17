@@ -20,6 +20,8 @@ so `--report` shows Codex/owner agreement for them.
   section per new rule, still advice-only.
 - Add `PostToolUse` / `PostToolUseFailure` outcome hooks for the new spellings.
 - Update `docs/specs/codex-approver.md` and ADR 0004; mirror to `~/.claude`.
+- Increment F: record the shape (never the arguments) of prompts that match no
+  rule, with a `--report --unmatched` view.
 
 ## Non-goals
 
@@ -240,6 +242,70 @@ shows as tampered or not found. Accepted residual risk: whoever can write
 `archive` behaves the same). Not run: the real harness hook kill, and
 case-insensitive filesystem aliasing. Still to do: commit, sync to `~/.claude`
 (hook file first), and one owner-observed `ask-codex archive` prompt.
+
+### Increment F — Log prompts that match no rule (approved by the owner 2026-10-17)
+
+Dependencies: C (engine, wiring)
+Affected areas: `hooks/codex_approver.py`, `docs/specs/codex-approver.md`, ADR 0004, `tests/test_codex_approver_*.py`
+
+Today a `PermissionRequest` that matches no rule exits without a trace, so the
+owner cannot see which commands keep prompting. The hook already receives every
+Bash prompt (unfiltered matcher), so it can record the unmatched ones. This
+adds no authority and no Codex call; it is a frequency list for deciding which
+`allow` entries or approver rules would remove the most prompts. It sees only
+commands that prompt: allow-listed commands never reach the hook.
+
+1. In `process()`, when `match_event` finds no rule, append one row to
+   `log/unmatched.jsonl` (separate from `verdicts.jsonl`, so agreement numbers
+   stay clean) and exit 0 as before. A logging failure never blocks a prompt.
+2. Row fields: timestamp, safe session id, `shape`, `compound` flag, command
+   SHA-256. `shape` is the leading command plus up to two non-option words
+   (for example `git ls-tree`, `uv run`), taken after env-assignment prefixes;
+   a token that looks secret-like (`secret_kind`) truncates the shape to the
+   first word. No arguments, paths or full command text are stored.
+3. A command with `;`, `&&`, `||`, a pipe, `$(`, a backtick or a newline
+   outside quotes is logged with `compound: true` and a `segments` list with
+   the shape of each command in it (skipping `cd`, assignments and shell
+   keywords), since compound commands are a common cause of unexpected prompts
+   and `cd x; remote-runner cancel $J | tail` would otherwise show only `cd`.
+   The primary `shape` is the first real command. A heredoc body is cut off.
+4. `--report --unmatched [--days N]` lists shapes ranked by count with first
+   and last seen and the compound share. The same size cap and rotation as the
+   other logs apply (`max_log_bytes`).
+5. No outcome row for unmatched commands (that would need broader `Post*`
+   patterns); revisit only if the frequency list proves too thin.
+6. Tests: a rule-matching command writes no unmatched row; an unmatched one
+   writes exactly one with the expected shape; compound, env-prefix, secret-like
+   and non-UTF-8 inputs; log write failure still exits 0 with no stdout; the
+   row never contains arguments; report ranking and `--days`.
+7. Spec and ADR 0004 sentence (advice-only, shape-only, no arguments logged);
+   security-review the shape extraction (it handles untrusted command text);
+   sync to `~/.claude` (hook file first).
+
+Completion: unmatched prompts in a temp-log run appear as shape rows and in
+`--report --unmatched`; matched prompts are unchanged; suite passes; mirror
+matches.
+
+Outcome (2026-10-17): steps 1-7 done in the working tree except commit and sync;
+25 tests in `test_codex_approver_unmatched.py`, 283 approver tests pass.
+Security review (`security-reviewer`): no Critical or High finding. Fixed with
+regression tests: (Medium) words inside a quoted or escaped env-assignment value
+became the program, and text after a `$(...)` or backtick substitution became
+a new command; quoted, escaped and substituted text is now masked before
+splitting, and a substitution's commands are listed after the outer ones;
+(Low) free-text subcommands (`ask-codex hunter2`, `make <target>`) were kept, so
+a subcommand is kept only from a fixed per-tool list; (Low) report text could
+carry terminal escapes, one malformed row (`segments` not a list), a deeply
+nested JSON line, or a huge `--days` aborted the report; these are now
+sanitised, skipped, caught and bounded. A 60,000-case fuzz of random quote,
+operator and substitution combinations found no argument text in a row.
+Accepted residual risk: a program name is kept as typed when it looks like a
+plain word, so a short secret typed as the command word itself (under 12
+characters, or without digits) is stored; words of 12+ characters with a digit,
+secret patterns and high-entropy words become `<other>`. Quote-aware masking
+treats heredoc bodies and `<<` conservatively (cut at the first newline).
+Still to do: commit, sync to `~/.claude` (hook file only), and watch real
+`--report --unmatched` output.
 
 ## Verification
 

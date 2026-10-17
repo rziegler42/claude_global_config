@@ -215,6 +215,18 @@ in the same session within 30 minutes and prints a verdict-by-outcome table, the
 decline then not run), the disagreements with their reasons, and runs that had no prompt. Prompts younger than 30
 minutes are counted as awaiting an answer. The report is the evidence for deciding on increment 2.
 
+### Prompts that match no rule
+
+A `PermissionRequest` for a Bash command that no rule covers appends one row to `unmatched.jsonl` (same size cap and
+rotation, separate from the verdicts so the agreement numbers stay clean). The row holds only a shape: the leading
+program's basename plus, for a fixed list of multi-command tools such as `git` or `remote-runner`, one subcommand word
+(`git ls-tree`, `uv run`). A compound command (`;`, `&&`, `||`, a pipe, `$(`, a backtick or a newline outside quotes) is
+flagged and also lists the shape of each command in it, skipping `cd`, assignments and shell keywords; a heredoc body is
+cut off. Arguments, paths and full command text are never stored, a secret-looking word truncates or drops the shape, and
+the row carries only the timestamp, a safe session id and the command's SHA-256. A logging failure never affects the
+prompt. `--report --unmatched [--days N]` ranks the shapes. Only commands that prompt appear: allow-listed commands never
+reach the hook, and there is no outcome row for these.
+
 ## Increments
 
 The increments below are the original delivery order. Advice for push and remote-runner was added later without

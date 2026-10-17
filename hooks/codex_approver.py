@@ -1850,6 +1850,11 @@ def printable(text):
     return text.encode("ascii", "backslashreplace").decode("ascii")[:LOGGED_REASON]
 
 
+def terminal_safe(text):
+    """printable() plus no control characters, for text shown in a terminal report."""
+    return re.sub(r"[\x00-\x1f\x7f]", "?", printable(text))
+
+
 def review_with_codex(rule, facts, checks, config, path_value, root):
     prompt = build_prompt(rule, facts, checks)
     started = datetime.datetime.now()
@@ -1903,6 +1908,146 @@ def safe_id(value):
 
 def command_digest(command):
     return hashlib.sha256(command.encode("utf-8", "replace")).hexdigest()
+
+
+# -- prompts that match no rule: shape only ------------------------------------------------------------
+
+PROGRAM_WORD = re.compile(r"[A-Za-z][A-Za-z0-9.+-]{0,39}")
+ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+MASK = "\x00"  # stands for quoted, escaped or substituted text, so none of it can become a word
+SHELL_PREFIX_WORDS = frozenset(("while", "until", "if", "then", "do", "else", "elif", "!", "{", "time"))
+SHELL_SKIP_WORDS = frozenset(("for", "select", "case", "done", "fi", "esac", "}", "in"))
+SUBCOMMANDS = {
+    "git": "status diff log show push pull fetch commit add switch branch tag stash rev-parse ls-files ls-tree "
+           "ls-remote remote config blame describe for-each-ref check-ignore cat-file rev-list merge-base worktree "
+           "clean reset rebase merge checkout restore cherry-pick apply mv rm grep submodule bisect reflog "
+           "shortlog gc fsck archive bundle diff-tree show-ref symbolic-ref update-ref hash-object init clone",
+    "gh": "pr issue repo run workflow api auth release gist search",
+    "uv": "run pip sync add remove lock venv tool python init build publish",
+    "npm": "install ci run test start build publish audit ls exec pack view init update outdated config cache",
+    "pnpm": "install run test build add remove exec dlx update audit",
+    "yarn": "install run test build add remove",
+    "cargo": "build test run check clippy fmt doc add install publish bench clean update tree",
+    "docker": "run build ps images exec logs pull push compose stop rm rmi network volume inspect cp system",
+    "kubectl": "get describe apply delete logs exec config rollout port-forward top",
+    "pip": "install uninstall list show freeze download check config",
+    "pip3": "install uninstall list show freeze download check config",
+    "brew": "install uninstall list info update upgrade search services outdated cleanup",
+    "go": "build test run mod get vet fmt install generate work env version list clean tool",
+    "systemctl": "status start stop restart enable disable reload daemon-reload list-units is-active show cat",
+    "nix": "build develop shell run flake eval store profile search copy hash log",
+    "remote-runner": "submit fetch cancel prune status log logs artifacts recommend remotes list doctor help",
+    "claude-workflow": "commit remove graph-doctor graph-diagnose graph-abort status help",
+    "ask-codex": "archive status init reset prune help",
+}
+SUBCOMMAND_SETS = {tool: frozenset(words.split()) for tool, words in SUBCOMMANDS.items()}
+SHAPE_SCAN = 4096
+MAX_SEGMENTS = 8
+SEPARATORS = ";\n|&()"
+
+
+def split_segments(text):
+    """The simple commands in a shell line and whether it was compound. Quoted, escaped and substituted text is
+    replaced by MASK so it can never become a word; operators inside quotes do not split. A command substitution
+    (`$(...)` or backticks) is listed after the outer commands, and the text after it stays with the outer command."""
+    segments, inner, stack = [], [], []
+    current, compound = [], False
+    quote, i, n = None, 0, len(text)
+
+    def emit(part):
+        (inner if stack else segments).append("".join(part))
+
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+            elif ch == quote:
+                quote = None
+            elif quote == '"' and (text.startswith("$(", i) or ch == "`"):
+                compound = True
+        elif ch == "\\":
+            current.append(MASK)
+            i += 1
+        elif ch in "'\"":
+            quote = ch
+            current.append(MASK)
+        elif text.startswith("$(", i) or ch == "`":
+            compound = True
+            if ch == "`" and stack and stack[-1][0] == "`":
+                emit(current)
+                current = stack.pop()[1] + [MASK]
+            else:
+                stack.append((ch, current))
+                current = []
+                i += 1 if ch == "$" else 0
+        elif ch == ")" and stack and stack[-1][0] == "$":
+            emit(current)
+            current = stack.pop()[1] + [MASK]
+        elif ch in SEPARATORS and not (ch == "&" and current and current[-1][-1:] in "<>"):
+            compound = True
+            emit(current)
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    emit(current)
+    while stack:
+        segments.append("".join(stack.pop()[1]))
+    return segments + inner, compound
+
+
+def segment_shape(segment):
+    """The leading program (no directory) plus, for a known tool, one word from its fixed subcommand list. A word
+    that does not look like a plain program name becomes <other>; junk such as a stray redirection is skipped."""
+    words = segment.split()
+    while words and (ASSIGNMENT_WORD.match(words[0]) or words[0] in SHELL_PREFIX_WORDS):
+        words = words[1:]
+    if not words or words[0] in SHELL_SKIP_WORDS:
+        return None
+    if MASK in words[0]:
+        return "<other>"
+    first = words[0].rsplit("/", 1)[-1]
+    if first == "cd" or not first or not (first[0].isalnum() or first[0] in "._~"):
+        return None
+    if (not PROGRAM_WORD.fullmatch(first) or secret_kind(first)
+            or (len(first) >= 12 and any(c.isdigit() for c in first))):
+        return "<other>"
+    if len(words) > 1 and words[1] in SUBCOMMAND_SETS.get(first, ()):
+        return first + " " + words[1]
+    return first
+
+
+def command_shape(command):
+    """What the unmatched-prompt log keeps of a command: the shape of its first real command, the shapes of every
+    command when it is compound, and whether a heredoc was cut off. Arguments and paths are never kept."""
+    text = command[:SHAPE_SCAN]
+    heredoc, at = False, text.find("<<")
+    if at >= 0 and not text.startswith("<<<", at):
+        heredoc = True
+        newline = text.find("\n", at)
+        text = text[:newline] if newline >= 0 else text
+    segments, compound = split_segments(text)
+    shapes = [shape for shape in map(segment_shape, segments) if shape]
+    return {"shape": shapes[0] if shapes else "<unparsed>", "compound": compound, "heredoc": heredoc,
+            "segments": shapes[:MAX_SEGMENTS] if compound else []}
+
+
+def record_unmatched(event):
+    """Append one shape row for a Bash permission prompt that no rule covers. Never raises, never decides."""
+    try:
+        if not isinstance(event, dict) or event.get("hook_event_name") != "PermissionRequest" \
+                or event.get("tool_name") != "Bash" or not isinstance(event.get("tool_input"), dict):
+            return
+        command = event["tool_input"].get("command")
+        if not isinstance(command, str) or not command.strip():
+            return
+        entry = dict(command_shape(command), ts=now_iso(), session_id=safe_id(event.get("session_id")),
+                     command_sha256=command_digest(command))
+        config = load_config(TOOL_HOME / "config.json")
+        append_log(TOOL_HOME / "log" / "unmatched.jsonl", entry, config["max_log_bytes"])
+    except Exception:  # noqa: BLE001 - logging must never disturb a prompt
+        return
 
 
 def match_event(event):
@@ -1971,7 +2116,7 @@ def read_jsonl(path):
         for line in text.splitlines():
             try:
                 row = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if isinstance(row, dict):
                 rows.append(row)
@@ -2069,7 +2214,46 @@ def format_report(report):
         for item in report["disagreements"][-20:]:
             lines.append("  %s  %-8s -> %-10s %s  %s" % (
                 item["ts"], item["verdict"], item["outcome"], item["rule"],
-                (", ".join(item["failed_checks"]) + " | " if item["failed_checks"] else "") + printable(item["reason_text"])[:140]))
+                (", ".join(item["failed_checks"]) + " | " if item["failed_checks"] else "") + terminal_safe(item["reason_text"])[:140]))
+    return "\n".join(lines) + "\n"
+
+
+def build_unmatched_report(rows, now=None, days=None):
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=days) if days else None
+    shapes, segments, total = {}, {}, 0
+    for ts, row in timed(rows, cutoff):
+        shape = row.get("shape")
+        if not isinstance(shape, str):
+            continue
+        total += 1
+        item = shapes.setdefault(shape, {"shape": shape, "count": 0, "compound": 0, "first": row.get("ts"),
+                                         "last": None})
+        item["count"] += 1
+        item["compound"] += 1 if row.get("compound") else 0
+        item["last"] = row.get("ts")
+        parts = row.get("segments")
+        for part in parts if isinstance(parts, list) else []:
+            if isinstance(part, str):
+                segments[part] = segments.get(part, 0) + 1
+    ranked = sorted(shapes.values(), key=lambda item: -item["count"])
+    return {"days": days, "total": total, "shapes": ranked,
+            "segments": [{"shape": shape, "count": count}
+                         for shape, count in sorted(segments.items(), key=lambda pair: -pair[1])]}
+
+
+def format_unmatched_report(report):
+    period = "last %d days" % report["days"] if report["days"] else "all time"
+    if not report["total"]:
+        return "No unmatched prompts recorded (%s).\n" % period
+    lines = ["Prompts matching no rule (%s): %d" % (period, report["total"]), "",
+             "%6s %9s  %-34s %s" % ("count", "compound", "shape", "last seen")]
+    for item in report["shapes"][:40]:
+        lines.append("%6d %9d  %-34s %s" % (item["count"], item["compound"], terminal_safe(item["shape"])[:34],
+                                            terminal_safe(str(item["last"]))[:25]))
+    if report["segments"]:
+        lines += ["", "Commands inside compound prompts:"]
+        lines += ["%6d  %s" % (item["count"], terminal_safe(item["shape"])[:60]) for item in report["segments"][:25]]
     return "\n".join(lines) + "\n"
 
 
@@ -2078,12 +2262,16 @@ def report_command(argv):
     if "--days" in argv:
         try:
             days = int(argv[argv.index("--days") + 1])
-            if days < 1:
+            if days < 1 or days > 36500:
                 raise ValueError
         except (IndexError, ValueError):
-            print("usage: codex_approver.py --report [--days N]", file=sys.stderr)
+            print("usage: codex_approver.py --report [--unmatched] [--days N]", file=sys.stderr)
             return 2
     log = TOOL_HOME / "log"
+    if "--unmatched" in argv:
+        sys.stdout.write(format_unmatched_report(
+            build_unmatched_report(read_jsonl(log / "unmatched.jsonl"), days=days)))
+        return 0
     sys.stdout.write(format_report(build_report(read_jsonl(log / "verdicts.jsonl"),
                                                 read_jsonl(log / "outcomes.jsonl"), days=days)))
     return 0
@@ -2099,7 +2287,7 @@ def process(raw):
         return process_outcome(event)
     matched = match_event(event)
     if matched is None:
-        return
+        return record_unmatched(event)
     command, spelling, config, rule, args = matched
     cwd = event.get("cwd")
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
