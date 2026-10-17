@@ -21,6 +21,11 @@
 - Prefer the smallest coherent, reviewable change and preserve unrelated user work.
 - Run the narrowest useful check, inspect failures, correct them, and rerun.
 - Use commands documented by the repository. Ask before unfamiliar or materially risky commands.
+- Run `git push`, `remote-runner`, `claude-workflow` and similar commands as
+  separate bare Bash calls, with no pipes, `;`, `&&`, `2>&1` or `cd` prefix.
+  Permission rules and the Codex approver match only a bare command, so a
+  compound line prompts as a whole and goes unlogged. Use the Read tool, not
+  `cat`, to read files.
 - Never commit, amend, push, publish, deploy, install dependencies, use secrets, or perform destructive cleanup without explicit user approval.
 - Commit messages and pull request descriptions describe the change only. Do
   not add AI attribution of any kind (`Co-Authored-By`, `Generated with`,

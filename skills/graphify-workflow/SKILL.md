@@ -135,8 +135,8 @@ impact-analysis value. After material architecture, ADR, or design-document
 changes, request a semantic refresh only if that change should be discoverable
 through the graph. Do not refresh merely because documentation changed.
 
-Before running `graph-prepare`, read `references/refresh.md` and follow it
-exactly: prepare, dispatch every chunk to the `graphify-semantic` agent,
+Before running `graph-prepare`, read `references/refresh.md` with the Read
+tool (not `cat`) and follow it exactly: prepare, dispatch every chunk to the `graphify-semantic` agent,
 validate each chunk, then finalize. Never remove refresh state or manifests
 manually; use `claude-workflow graph-doctor` for the next safe action.
 
