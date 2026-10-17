@@ -70,7 +70,13 @@ ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 SUBCOMMAND_RE = re.compile(r"[a-z][a-z-]{0,31}")
 FLAG_RE = re.compile(r"--[a-z][a-z-]{0,31}|-[A-Za-z]")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
-CONFIG_KEYS = {"mode", "model", "effort", "codex_timeout_seconds", "max_log_bytes", "notify"}
+CONFIG_KEYS = {"mode", "model", "effort", "codex_timeout_seconds", "max_log_bytes", "notify", "delegate"}
+# The only rules the approver may ever allow without the owner. Widening this is a code change that needs
+# its own ADR; the `delegate` list in config.json can only choose among these, never add to them.
+DELEGABLE = frozenset({"claude-workflow-commit"})
+ALLOW_OUTPUT = json.dumps(
+    {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
+    separators=(",", ":"))
 RULE_KEYS = {"id", "tool", "subcommand", "collector", "checks", "rubric", "review_checks", "required",
              "flags", "positionals"}
 ENV_PASS = ("PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
@@ -217,8 +223,14 @@ def load_config(path):
     config = read_json(path, "config")
     if not isinstance(config, dict) or set(config) != CONFIG_KEYS:
         raise ConfigError("config keys must be exactly %s" % sorted(CONFIG_KEYS))
-    if config["mode"] != "advise":
-        raise ConfigError("mode must be 'advise' in this version")
+    delegate = config["delegate"]
+    if config["mode"] not in ("advise", "delegate") or not isinstance(config["mode"], str):
+        raise ConfigError("mode must be 'advise' or 'delegate'")
+    if not (isinstance(delegate, list) and all(isinstance(item, str) for item in delegate)
+            and len(set(delegate)) == len(delegate) and set(delegate) <= DELEGABLE):
+        raise ConfigError("delegate must list distinct rule ids from %s" % sorted(DELEGABLE))
+    if (config["mode"] == "delegate") != bool(delegate):
+        raise ConfigError("delegate mode needs a non-empty delegate list, and advise mode needs an empty one")
     if not (isinstance(config["model"], str) and MODEL_RE.fullmatch(config["model"])):
         raise ConfigError("model is invalid")
     if config["effort"] not in EFFORTS:
@@ -2380,6 +2392,18 @@ def report_command(argv):
 
 # -- hook entry ---------------------------------------------------------------------------------------
 
+def delegated_decision(config, rule_id, verdict):
+    """'allow' only for an approved prompt of a rule that is both on the code ceiling and in the owner's
+    list, in delegate mode; 'none' otherwise. Strict about types so a malformed object cannot allow."""
+    if not isinstance(config, dict) or config.get("mode") != "delegate":
+        return "none"
+    delegate = config.get("delegate")
+    if not (isinstance(delegate, list) and isinstance(rule_id, str) and rule_id in delegate
+            and rule_id in DELEGABLE and verdict == "approve" and isinstance(verdict, str)):
+        return "none"
+    return "allow"
+
+
 def process(raw):
     if len(raw) > MAX_STDIN:
         return
@@ -2401,12 +2425,15 @@ def process(raw):
         "ts": now_iso(), "rule": rule["id"], "verdict": verdict["verdict"], "reason": verdict["reason"],
         "failed_checks": verdict["failed"], "mode": config["mode"], "command_sha256": command_digest(command),
         "session_id": safe_id(event.get("session_id")), "started_ts": started,
+        "decision": delegated_decision(config, rule["id"], verdict["verdict"]),
     }
     for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256", "secret_kinds",
                 "secret_paths"):
         if verdict.get(key) is not None:
             entry[key] = verdict[key]
     append_log(TOOL_HOME / "log" / "verdicts.jsonl", entry, config["max_log_bytes"])
+    if entry["decision"] == "allow":  # only after the verdict is on disk, so an allow is never unlogged
+        print(ALLOW_OUTPUT, flush=True)
     if config["notify"]:
         notify(rule["id"], verdict["verdict"])
 

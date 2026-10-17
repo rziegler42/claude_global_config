@@ -262,5 +262,105 @@ class HookEndToEndTests(CodexCase):
         self.assertEqual(entries[0]["verdict"], "no_verdict")
 
 
+ALLOW_OUTPUT = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}
+
+
+class DelegationTests(HookEndToEndTests):
+    """Authority: only an approved, delegated commit prompt prints an allow; everything else prints nothing."""
+
+    def delegate(self, **changes):
+        path = self.claude / "codex-approver" / "config.json"
+        config = json.loads(path.read_text())
+        config.update(mode="delegate", delegate=["claude-workflow-commit"])
+        config.update(changes)
+        path.write_text(json.dumps(config))
+
+    def command(self):
+        return self.edit().replace("claude-workflow", "~/.claude/bin/claude-workflow", 1)
+
+    def test_an_approved_delegated_commit_prints_exactly_the_allow_decision(self):
+        self.delegate()
+        self.scenario(self.ok(GOOD_APPROVE))
+        r, entries = self.fire(self.command())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), ALLOW_OUTPUT)
+        self.assertEqual(r.stdout.count("\n"), 1)
+        self.assertEqual((entries[0]["verdict"], entries[0]["mode"], entries[0]["decision"]),
+                         ("approve", "delegate", "allow"))
+
+    def test_an_allow_is_never_printed_when_the_verdict_cannot_be_logged(self):
+        self.delegate()
+        self.scenario(self.ok(GOOD_APPROVE))
+        log = self.claude / "codex-approver" / "log"
+        if log.exists():
+            shutil.rmtree(log)
+        log.write_text("not a directory")
+        r, _entries = self.fire(self.command())
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_a_decline_prints_nothing_and_logs_no_allow(self):
+        self.delegate()
+        self.scenario(self.ok({"verdict": "decline", "failed_checks": ["scope_is_coherent"], "reason": "Unrelated."}))
+        r, entries = self.fire(self.command())
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual((entries[0]["verdict"], entries[0]["decision"]), ("decline", "none"))
+
+    def test_no_verdict_and_a_hung_codex_print_nothing(self):
+        self.delegate(codex_timeout_seconds=1)
+        for scenario in ({"mode": "error", "stderr": "x", "exit": 1}, {"mode": "hang"},
+                         {"mode": "ok", "result": {"verdict": "approve"}}):
+            with self.subTest(scenario=scenario):
+                self.scenario(scenario)
+                started = time.time()
+                r, entries = self.fire(self.command())
+                self.assertEqual((r.returncode, r.stdout), (0, ""))
+                self.assertEqual((entries[-1]["verdict"], entries[-1]["decision"]), ("no_verdict", "none"))
+                self.assertLess(time.time() - started, 12)
+
+    def test_a_failed_deterministic_check_never_reaches_allow_even_if_codex_would_approve(self):
+        self.delegate()
+        self.scenario(self.ok(GOOD_APPROVE))
+        (self.repo / "a.txt").write_text("changed\n")
+        stale = self.commit_command("a.txt", head="0" * 40)
+        r, entries = self.fire(stale.replace("claude-workflow", "~/.claude/bin/claude-workflow", 1))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual((entries[0]["verdict"], entries[0]["decision"]), ("decline", "none"))
+        self.assertEqual(self.calls(), [])
+
+    def test_advice_only_mode_prints_nothing_and_records_no_allow(self):
+        self.scenario(self.ok(GOOD_APPROVE))
+        r, entries = self.fire(self.command())
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual((entries[0]["verdict"], entries[0]["decision"]), ("approve", "none"))
+
+    def test_a_config_that_names_another_rule_disables_the_output(self):
+        self.delegate(delegate=["claude-workflow-commit", "git-push"])
+        self.scenario(self.ok(GOOD_APPROVE))
+        r, entries = self.fire(self.command())
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual(entries, [])
+
+
+class DecisionFunctionTests(unittest.TestCase):
+    """The emission itself enforces the ceiling, so a forged config object cannot widen it."""
+
+    DELEGATING = {"mode": "delegate", "delegate": ["claude-workflow-commit"]}
+
+    def test_only_an_approved_delegated_commit_allows(self):
+        decide = ca.delegated_decision
+        self.assertEqual(decide(self.DELEGATING, "claude-workflow-commit", "approve"), "allow")
+        for rule in ("claude-workflow-remove", "git-push", "remote-runner-submit", "ask-codex-archive", "x", None):
+            with self.subTest(rule=rule):
+                self.assertEqual(decide(dict(self.DELEGATING, delegate=[rule]), rule, "approve"), "none")
+                self.assertEqual(decide(self.DELEGATING, rule, "approve"), "none")
+        for verdict in ("decline", "no_verdict", "APPROVE", None, True, ["approve"]):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(decide(self.DELEGATING, "claude-workflow-commit", verdict), "none")
+        for config in ({"mode": "advise", "delegate": ["claude-workflow-commit"]}, {"mode": "delegate", "delegate": []},
+                       {"mode": "delegate"}, {}, {"mode": "delegate", "delegate": "claude-workflow-commit"}):
+            with self.subTest(config=config):
+                self.assertEqual(decide(config, "claude-workflow-commit", "approve"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

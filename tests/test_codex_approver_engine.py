@@ -47,7 +47,8 @@ REMOVE_RULE = {
     "positionals": "paths",
 }
 CONFIG = {"mode": "advise", "model": "gpt-6.1-sol", "effort": "medium",
-          "codex_timeout_seconds": 12, "max_log_bytes": 5242880, "notify": False}
+          "codex_timeout_seconds": 12, "max_log_bytes": 5242880, "notify": False, "delegate": []}
+DELEGATING = dict(CONFIG, mode="delegate", delegate=["claude-workflow-commit"])
 
 
 class TokenizeTests(unittest.TestCase):
@@ -187,12 +188,27 @@ class ConfigAndRuleLoadingTests(unittest.TestCase):
             dict(CONFIG, codex_timeout_seconds=0), dict(CONFIG, codex_timeout_seconds=1000),
             dict(CONFIG, notify="yes"), dict(CONFIG, max_log_bytes=10), "not json", "[]",
             {k: v for k, v in CONFIG.items() if k != "mode"},
+            {k: v for k, v in CONFIG.items() if k != "delegate"},
+            # advice-only mode must not carry a delegation list, and delegate mode needs one
+            dict(CONFIG, delegate=["claude-workflow-commit"]), dict(DELEGATING, delegate=[]),
+            # only the commit rule is on the ceiling; anything else, duplicates and bad shapes are refused
+            dict(DELEGATING, delegate=["git-push"]), dict(DELEGATING, delegate=["claude-workflow-remove"]),
+            dict(DELEGATING, delegate=["claude-workflow-commit", "git-push"]),
+            dict(DELEGATING, delegate=["claude-workflow-commit", "claude-workflow-commit"]),
+            dict(DELEGATING, delegate="claude-workflow-commit"), dict(DELEGATING, delegate=[None]),
+            dict(DELEGATING, delegate=[["claude-workflow-commit"]]), dict(DELEGATING, delegate=None),
+            dict(DELEGATING, delegate=["CLAUDE-WORKFLOW-COMMIT"]), dict(DELEGATING, delegate=["unknown-rule"]),
+            dict(DELEGATING, mode="Delegate"), dict(DELEGATING, mode=["delegate"]),
         ]
         for value in bad_values:
             with self.subTest(value=value):
                 path = self.write("config.json", value)
                 with self.assertRaises(ca.ConfigError):
                     ca.load_config(path)
+
+    def test_load_config_accepts_delegation_of_the_commit_rule_only(self):
+        self.assertEqual(ca.load_config(self.write("config.json", DELEGATING)), DELEGATING)
+        self.assertEqual(ca.DELEGABLE, frozenset({"claude-workflow-commit"}))
 
     def test_load_config_missing_file_is_an_error(self):
         with self.assertRaises(ca.ConfigError):

@@ -4,5 +4,6 @@
   "effort": "medium",
   "codex_timeout_seconds": 15,
   "max_log_bytes": 5242880,
-  "notify": true
+  "notify": true,
+  "delegate": []
 }
