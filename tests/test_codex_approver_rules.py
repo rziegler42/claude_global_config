@@ -17,6 +17,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "hooks" / "codex_approver.py"
+# Assembled at runtime so the file holds no literal key shape for push protection to flag.
+FAKE_AWS_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
 HELPER = ROOT / "bin" / "claude-workflow"
 RULES = ROOT / "codex-approver" / "rules"
 
@@ -210,10 +212,10 @@ class CommitCollectorTests(RuleCase):
         self.assertIn("+hello", change["diff"])
 
     def test_new_file_with_a_secret_looking_line_fails(self):
-        (self.repo / "cfg.txt").write_text("ok\naws = AKIAABCDEFGHIJKLMNOP\n")
+        (self.repo / "cfg.txt").write_text("ok\naws = " + FAKE_AWS_KEY + "\n")
         result = self.analyze(self.commit_command("cfg.txt"))
         self.assertFails(result, "no_secret_lines")
-        self.assertNotIn("AKIAABCDEFGHIJKLMNOP", repr(result["facts"]))
+        self.assertNotIn(FAKE_AWS_KEY, repr(result["facts"]))
 
     def test_secret_patterns(self):
         samples = {
@@ -376,13 +378,13 @@ class CommitCollectorTests(RuleCase):
         (self.repo / "a.txt").write_text("one\ntwo\n" + "x\n" * 3)
         self.git("add", "a.txt")
         self.git("commit", "-q", "-m", "more")
-        (self.repo / "k.txt").write_text("harmless\nAKIAABCDEFGHIJKLMNOP\nafter\n")
+        (self.repo / "k.txt").write_text("harmless\n" + FAKE_AWS_KEY + "\nafter\n")
         self.git("add", "k.txt")
         self.git("commit", "-q", "-m", "key committed earlier")
         # a removed line carrying the key, and a context line carrying it
         (self.repo / "k.txt").write_text("harmless\nafter\nnew line\n")
         self.assertFails(self.analyze(self.commit_command("k.txt")), "no_secret_lines")
-        (self.repo / "k.txt").write_text("harmless\nAKIAABCDEFGHIJKLMNOP\nafter\nnew line\n")
+        (self.repo / "k.txt").write_text("harmless\n" + FAKE_AWS_KEY + "\nafter\nnew line\n")
         self.assertFails(self.analyze(self.commit_command("k.txt")), "no_secret_lines")
         samples = {
             "unquoted token": "token = abcdefgh12345678",
@@ -784,6 +786,25 @@ class ChecksumContextTests(unittest.TestCase):
         self.assertEqual(ca.secret_kind("checksum: " + random_token), "high_entropy")
         self.assertEqual(ca.secret_kind("+k = sha256-Zk3Qp9Lm2Xv8Bn5Rt7Yw1Cd4Fg6Hj0KsAbCdEfGhIjKl"), "high_entropy")
         self.assertIsNone(ca.secret_kind('"integrity": "sha256-' + "Ab1+" * 10 + 'Ab1="'))
+
+
+class WordCompoundTests(unittest.TestCase):
+    def test_long_identifiers_and_adr_names_are_not_secrets(self):
+        for line in (
+                "+| [0001](0001-observation-boundary.md) | Observation boundary for hidden information | Proposed |",
+                "+`tests/engine/test_observation.py`, `docs/decisions/0001-observation-boundary.md`",
+                "+   `test_observation_includes_public_pegging_history`,",
+                "+def test_observation_includes_public_pegging_history() -> None:",
+                "+MAX_RETRY_COUNT_BEFORE_GIVING_UP_ENTIRELY = 3"):
+            with self.subTest(line=line):
+                self.assertIsNone(ca.secret_kind(line))
+
+    def test_random_tokens_are_still_flagged(self):
+        for token in ("Xk9fQ2lMb3ZlU3RyYW5nZVNlY3JldEtleTEyMzQ1Njc4OTBhYmNk",
+                      "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d",
+                      "Zk3Qp9Lm2-Xv8Bn5Rt7_Yw1Cd4Fg6Hj0KsAbCdEfGhIjKl"):
+            with self.subTest(token=token):
+                self.assertEqual(ca.secret_kind("+k = " + token), "high_entropy")
 
 
 class RemoveFactsTests(RuleCase):

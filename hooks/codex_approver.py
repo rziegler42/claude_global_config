@@ -520,6 +520,7 @@ INTEGRITY_RE = re.compile(
 JOB_ID_RE = re.compile(r"[a-z0-9]+(?:--[a-z0-9]+)*--\d{8}-\d{6}--[0-9a-f]{8}")
 WORDY_SEGMENT_RE = re.compile(r"[A-Za-z_.-]{3,}")
 SEGMENT_MIN = 16
+COMPOUND_PART_RE = re.compile(r"[a-z]{1,24}|[A-Z]{1,24}|[A-Z][a-z]{1,23}|\d{1,6}")
 
 
 def shannon_entropy(token):
@@ -529,10 +530,20 @@ def shannon_entropy(token):
     return -sum(n / len(token) * math.log2(n / len(token)) for n in counts.values())
 
 
+def is_word_compound(token):
+    """An identifier or file stem built from plain words and short numbers joined by `_` or `-` (at least two
+    joins), such as test_observation_includes_public_pegging_history or 0001-observation-boundary. Random
+    secrets almost never split into only lowercase, uppercase or Capitalized words."""
+    parts = re.split(r"[_-]+", token.strip("_-"))
+    return len(parts) >= 3 and all(COMPOUND_PART_RE.fullmatch(part) for part in parts)
+
+
 def token_is_suspect(token):
     """Random-looking: long hex (a 40-character Git object id is exempt), or a mixed token with high entropy."""
     if HEX_RE.fullmatch(token):
         return len(token) >= 32 and len(token) != 40
+    if is_word_compound(token):
+        return False
     mixed = any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
     entropy = shannon_entropy(token)
     return entropy >= 4.0 if len(token) >= 40 else (mixed and entropy >= 3.8)
@@ -1864,9 +1875,11 @@ def evaluate(rule, args, spelling, cwd, config, path_value=None, home=None):
         return {"verdict": "no_verdict", "reason": "collector_error:" + exc.__class__.__name__, "failed": []}
     digest = hashlib.sha256(canonical_facts(result["facts"]).encode("ascii")).hexdigest() if result["facts"] else None
     if result["failed"]:
-        kinds = sorted({hit["kind"] for hit in (result["facts"] or {}).get("secret_hits", []) if hit.get("kind")})
+        hits = (result["facts"] or {}).get("secret_hits", [])
+        kinds = sorted({hit["kind"] for hit in hits if hit.get("kind")})
+        where = [printable(str(hit["path"]))[:120] for hit in hits if hit.get("path")][:5]
         return {"verdict": "decline", "reason": "failed_checks", "failed": result["failed"], "facts_sha256": digest,
-                "secret_kinds": kinds or None}
+                "secret_kinds": kinds or None, "secret_paths": where or None}
     try:
         verdict = review_with_codex(rule, result["facts"], list(result["checks"]), config, path_value, cwd)
     except Exception as exc:  # noqa: BLE001 - a review failure means no decision
@@ -2099,7 +2112,8 @@ def process(raw):
         "failed_checks": verdict["failed"], "mode": config["mode"], "command_sha256": command_digest(command),
         "session_id": safe_id(event.get("session_id")),
     }
-    for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256", "secret_kinds"):
+    for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256", "secret_kinds",
+                "secret_paths"):
         if verdict.get(key) is not None:
             entry[key] = verdict[key]
     append_log(TOOL_HOME / "log" / "verdicts.jsonl", entry, config["max_log_bytes"])
