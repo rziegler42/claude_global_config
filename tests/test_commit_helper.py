@@ -18,7 +18,7 @@ ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com"
        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
 
 
-class CommitHelper(unittest.TestCase):
+class CommitFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -45,6 +45,8 @@ class CommitHelper(unittest.TestCase):
     def message(self):
         return self.git("show", "-s", "--format=%B", "HEAD")
 
+
+class CommitHelper(CommitFixture):
     def test_subject_only_still_works(self):
         r = self.commit("--subject", "Update a")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -137,6 +139,108 @@ class CommitHelper(unittest.TestCase):
         r = self.helper("amend-message", "--expected-head", self.git("rev-parse", "HEAD"),
                         "--subject", "S", "--trailer", "bad")
         self.assertNotEqual(r.returncode, 0)
+
+
+class RepositoryPrograms(CommitFixture):
+    """A repository that selects a program for the commit to run is refused unless the owner opts in.
+
+    The Codex approver may allow a commit with no dialog, so the helper must not run repository-chosen code
+    that the approver's own gate would have declined, even if the repository changed after approval.
+    """
+
+    def setUp(self):
+        super().setUp()
+        marks = tempfile.TemporaryDirectory()
+        self.addCleanup(marks.cleanup)
+        self.mark = Path(marks.name).resolve() / "ran"
+
+    def add_hook(self, name="pre-commit"):
+        hook = self.root / ".git" / "hooks" / name
+        hook.write_text("#!/bin/sh\necho %s > '%s'\nexit 0\n" % (name, self.mark))
+        hook.chmod(0o755)
+
+    def assert_refused(self, *extra):
+        head = self.git("rev-parse", "HEAD")
+        r = self.commit("--subject", "Update a", *extra)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("repository", (r.stderr + r.stdout).lower())
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
+        self.assertFalse(self.mark.exists(), "repository code ran")
+
+    def test_executable_hook_is_refused_and_does_not_run(self):
+        self.add_hook()
+        self.assert_refused()
+
+    def test_every_exec_config_shape_is_refused(self):
+        for key, value in (("core.hooksPath", "elsewhere"), ("filter.x.clean", "cat"), ("filter.x.process", "cat"),
+                           ("commit.gpgsign", "true"), ("gpg.program", "gpg"), ("gpg.ssh.defaultKeyCommand", "x"),
+                           ("diff.x.textconv", "cat"), ("core.fsmonitor", "x"), ("core.sshCommand", "ssh")):
+            with self.subTest(key=key):
+                self.git("config", key, value)
+                self.assert_refused()
+                self.git("config", "--unset", key)
+
+    def test_a_sample_hook_and_a_non_executable_hook_are_not_findings(self):
+        sample = self.root / ".git" / "hooks" / "pre-commit.sample"
+        sample.write_text("#!/bin/sh\nexit 1\n")
+        sample.chmod(0o755)
+        (self.root / ".git" / "hooks" / "commit-msg").write_text("#!/bin/sh\nexit 1\n")
+        r = self.commit("--subject", "Update a")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_hook_added_after_approval_is_still_refused(self):
+        # The approver judged the repository clean; the helper checks again when it actually runs.
+        head = self.git("rev-parse", "HEAD")
+        self.add_hook()
+        r = self.helper("commit", "--expected-head", head, "--subject", "Update a", "--", "a.txt")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.mark.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+
+    def test_a_head_that_moved_after_approval_is_refused(self):
+        stale = self.git("rev-parse", "HEAD")
+        (self.root / "b.txt").write_text("b2\n")
+        self.git("add", "b.txt")
+        self.git("commit", "-q", "-m", "intervening")
+        moved = self.git("rev-parse", "HEAD")
+        r = self.helper("commit", "--expected-head", stale, "--subject", "Update a", "--", "a.txt")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("HEAD changed", r.stdout + r.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), moved)
+
+    def test_work_staged_after_approval_is_refused_not_swept_in(self):
+        head = self.git("rev-parse", "HEAD")
+        (self.root / "b.txt").write_text("b2\n")
+        self.git("add", "b.txt")
+        r = self.helper("commit", "--expected-head", head, "--subject", "Update a", "--", "a.txt")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "b.txt")
+
+    def test_the_owner_can_opt_in_and_the_hook_then_runs(self):
+        self.add_hook()
+        r = self.commit("--subject", "Update a", "--allow-repo-programs")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.mark.exists())
+        self.assertEqual(self.message(), "Update a")
+
+    def test_git_runs_with_replace_refs_ignored(self):
+        bin_dir = Path(self.tmp.name).parent / ("wrap-" + self.root.name)
+        bin_dir.mkdir()
+        self.addCleanup(lambda: [p.unlink() for p in bin_dir.iterdir()] or bin_dir.rmdir())
+        seen = bin_dir / "seen"
+        real = subprocess.run(["which", "git"], capture_output=True, text=True).stdout.strip()
+        wrapper = bin_dir / "git"
+        wrapper.write_text("#!/bin/sh\necho \"$GIT_NO_REPLACE_OBJECTS\" >> '%s'\nexec %s \"$@\"\n" % (seen, real))
+        wrapper.chmod(0o755)
+        env = {**ENV, "PATH": "%s:%s" % (bin_dir, os.environ["PATH"])}
+        r = subprocess.run([sys.executable, "-B", str(BIN / "claude-workflow"), "commit", "--expected-head",
+                            self.git("rev-parse", "HEAD"), "--subject", "Update a", "--", "a.txt"],
+                           cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        values = seen.read_text().split()
+        self.assertTrue(values and set(values) == {"1"}, values)
 
 
 if __name__ == "__main__":

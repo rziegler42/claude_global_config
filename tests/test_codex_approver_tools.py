@@ -5,6 +5,7 @@ Run from the repository root with:  python3 -B -m unittest discover -s tests
 The engine matches `claude-workflow`, `remote-runner` and plain `git push` commands. These tests use
 synthetic rules; the shipped rule files for the new tools arrive in increment C.
 """
+import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
@@ -213,6 +214,87 @@ class InvocationTests(unittest.TestCase):
     def test_a_missing_git_is_refused(self):
         ok, why = self.resolve("git", path_value=str(self.repo / "nowhere"))
         self.assertEqual((ok, why), (False, "not_found:git"))
+
+
+class HelperParityTests(unittest.TestCase):
+    """The approver's gate and the helper's own refusal must name the same repository programs.
+
+    If they drifted, the approver could allow a commit the helper refuses (a dialog-free failure) or, worse,
+    the helper could run a program the gate never looked for.
+    """
+
+    CASES = (
+        [],
+        [("core.hooksPath", "elsewhere")],
+        [("filter.x.clean", "cat")],
+        [("filter.x.process", "cat")],
+        [("commit.gpgsign", "true")],
+        [("commit.gpgsign", "false")],
+        [("gpg.program", "gpg")],
+        [("gpg.ssh.defaultKeyCommand", "x")],
+        [("diff.x.textconv", "cat")],
+        [("core.fsmonitor", "x")],
+        [("core.sshCommand", "ssh")],
+        [("user.name", "someone")],
+        [("filter.x.clean", "cat"), ("gpg.program", "gpg")],
+    )
+
+    def setUp(self):
+        import subprocess
+        from unittest import mock
+        self.subprocess = subprocess
+        loader = importlib.machinery.SourceFileLoader("helper_under_parity_test", str(ROOT / "bin" / "claude-workflow"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        self.helper = importlib.util.module_from_spec(spec)
+        loader.exec_module(self.helper)
+        self.mock = mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.git("init", "-q", "-b", "main")
+
+    def git(self, *args):
+        result = self.subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def hook(self, name, mode=0o755):
+        path = self.root / ".git" / "hooks" / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(mode)
+
+    def compare(self):
+        helper = self.helper.repo_program_findings(self.root)
+        with self.mock.patch.dict(os.environ):
+            ca.harden_git_environment()  # the hook's own environment, which forces its hardening settings
+            approver = ca.repo_exec_findings(self.helper, self.root)
+        self.assertEqual(approver, helper)
+        return helper
+
+    def test_config_shapes_agree(self):
+        for settings in self.CASES:
+            with self.subTest(settings=settings):
+                for key, value in settings:
+                    self.git("config", key, value)
+                found = self.compare()
+                self.assertEqual(bool(found), any(k != "user.name" and not (k == "commit.gpgsign" and v == "false")
+                                                  for k, v in settings))
+                for key, _value in settings:
+                    self.git("config", "--unset", key)
+
+    def test_the_commit_rule_never_accepts_the_owner_opt_in_flag(self):
+        import json
+        rule = json.loads((ROOT / "codex-approver" / "rules" / "claude-workflow-commit.json").read_text())
+        self.assertNotIn("--allow-repo-programs", rule["flags"])
+        command = "commit --expected-head abc --subject s --allow-repo-programs -- a.txt"
+        self.assertIsNone(ca.match_rule(ca.tokenize(command), [rule], tool="claude-workflow"))
+        plain = "commit --expected-head abc --subject s -- a.txt"
+        self.assertIsNotNone(ca.match_rule(ca.tokenize(plain), [rule], tool="claude-workflow"))
+
+    def test_hooks_agree(self):
+        self.hook("pre-commit")
+        self.hook("commit-msg.sample")
+        self.hook("post-commit", mode=0o644)
+        self.assertEqual(self.compare(), ["hook:pre-commit"])
 
 
 if __name__ == "__main__":

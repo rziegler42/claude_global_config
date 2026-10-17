@@ -378,10 +378,10 @@ def load_helper():
         loader.exec_module(module)
         original = module.run
 
-        def bounded_run(argv, cwd, check=True, input_text=None, timeout=None):
+        def bounded_run(argv, cwd, check=True, input_text=None, timeout=None, **extra):
             # Every helper Git call gets a deadline, so a hostile repository cannot hang the hook
             # or leave an orphaned Git process (subprocess kills the child on timeout).
-            return original(argv, cwd, check=check, input_text=input_text, timeout=timeout or GIT_TIMEOUT)
+            return original(argv, cwd, check=check, input_text=input_text, timeout=timeout or GIT_TIMEOUT, **extra)
 
         module.run = bounded_run
         _HELPER = module

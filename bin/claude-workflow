@@ -71,12 +71,15 @@ def trusted_which(name, boundary):
     return None
 
 
-def run(argv, cwd, check=True, input_text=None, timeout=None):
+def run(argv, cwd, check=True, input_text=None, timeout=None, env_extra=None):
     boundary = repository_boundary(cwd)
     env = dict(os.environ)
     entries = trusted_path_entries(boundary) or ["/usr/bin", "/bin"]
     env["PATH"] = os.pathsep.join(entries)
+    env.update(env_extra or {})
     if argv and argv[0] == "git":
+        # A repository can rewrite objects with refs/replace; never let it do that to a commit.
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
         found = trusted_which("git", boundary)
         if found is None:
             raise RuntimeError("git was not found in an absolute PATH entry outside the repository")
@@ -975,8 +978,51 @@ def graph_validate_chunk(root, raw_path):
     )
 
 
+# Repository settings shaped like "a program or command to run". A name list kept missing keys
+# (gpg.ssh.defaultKeyCommand ran code), so the shape decides. hooks/codex_approver.py declines the same
+# shapes before it approves a commit, and tests/test_codex_approver_tools.py checks the two agree.
+EXEC_KEY = re.compile(
+    r".*\.(program|command|driver|cmd|clean|smudge|process|textconv|external|defaultkeycommand)"
+    r"|core\.(hookspath|fsmonitor|sshcommand)"
+)
+TRUTHY = ("true", "yes", "on", "1")
+
+
+def repo_program_findings(root):
+    """Names (never values) of repository-controlled settings that make a commit run a program: filter
+    drivers, hooks, a signing or diff program. The owner's own global and system Git configuration is
+    trusted and left out, so only the repository (and files it includes) is read."""
+    findings = []
+    quiet = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    listing = run(["git", "config", "--list", "-z"], root, check=False, env_extra=quiet)
+    if listing.returncode:
+        return ["config:unreadable"]
+    for entry in listing.stdout.split("\0"):
+        key, _, value = entry.partition("\n")
+        lowered = key.lower()
+        if EXEC_KEY.fullmatch(lowered) or (lowered == "commit.gpgsign" and value.strip().lower() in TRUTHY):
+            findings.append(key)
+    for flag in ("--absolute-git-dir", "--git-common-dir"):
+        directory = run(["git", "rev-parse", flag], root).stdout.strip()
+        hooks = os.path.join(directory if os.path.isabs(directory) else os.path.join(str(root), directory), "hooks")
+        try:
+            names_here = sorted(os.listdir(hooks))
+        except OSError:
+            continue
+        for name in names_here:
+            path = os.path.join(hooks, name)
+            if not name.endswith(".sample") and os.path.isfile(path) and os.access(path, os.X_OK):
+                findings.append("hook:" + name)
+    return sorted(set(findings))
+
+
 def commit(args):
     root = git_root(Path.cwd())
+    findings = repo_program_findings(root)
+    if findings and not args.allow_repo_programs:
+        raise RuntimeError(
+            "the repository selects programs the commit would run (%s); refusing "
+            "(the owner can pass --allow-repo-programs)" % ", ".join(findings[:8]))
     # Paths are exact file names, never pathspecs with magic.
     os.environ["GIT_LITERAL_PATHSPECS"] = "1"
     paragraphs = message_paragraphs(args.subject, args.body, args.trailer)
@@ -1066,6 +1112,7 @@ def main():
     commit_p.add_argument("--body")
     commit_p.add_argument("--trailer", action="append", default=[])
     commit_p.add_argument("--leave-other-staged", action="store_true")
+    commit_p.add_argument("--allow-repo-programs", action="store_true")
     commit_p.add_argument("paths", nargs="+")
     amend_p = sub.add_parser("amend-message")
     amend_p.add_argument("--expected-head", required=True)
