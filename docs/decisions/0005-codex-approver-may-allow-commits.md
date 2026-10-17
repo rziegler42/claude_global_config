@@ -13,8 +13,9 @@ misled assistant, hostile repository content, and a wrong approval, not a remote
 
 Plan 0005 and ADR 0004 named four prerequisites before any `allow`: harden the real helper (it ran Git without
 the hook's protections), settle the secret-detection question, close the gap between approval and execution,
-and show that a slow Codex cannot produce a late allow. Plan 0007 (`docs/plans/next.md` until archived)
-delivered them.
+and show that a slow Codex cannot produce a late allow. Plan 0007
+(`docs/plans/0007-codex-approver-commit-delegation.md`) delivered the first three; the late-allow check is covered by
+tests for a hung Codex and by the fact that a killed hook's output is discarded, not by a live observation.
 
 ## Decision
 
