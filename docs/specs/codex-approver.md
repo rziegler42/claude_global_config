@@ -130,7 +130,10 @@ Initial deterministic checks:
   and no named path is already staged; the helper's own path and message
   validation (including its attribution refusal) passes; no path is
   credential-looking or not a regular file; no secret-looking line in the
-  collected content or message (pattern and entropy based); the change is
+  collected content or message (pattern and entropy based; a known lockfile
+  skips only the entropy check and a file under a `tests`, `test` or
+  `__tests__` directory skips only the two generic `token = "value"` style
+  patterns, and the message gets the full scan); the change is
   complete (not truncated or binary); the repository configures no filter
   driver, hook, signing program or diff program that the real commit would run
   (`repo_config_safe`, names only). Changes are computed in Python from the `HEAD` blob and the

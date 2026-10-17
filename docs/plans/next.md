@@ -307,6 +307,51 @@ treats heredoc bodies and `<<` conservatively (cut at the first newline).
 Still to do: commit, sync to `~/.claude` (hook file only), and watch real
 `--report --unmatched` output.
 
+### Increment G — Fewer false secret declines in lockfiles and tests (approved by the owner 2026-10-17)
+
+Dependencies: A (secret scan), F (`secret_paths` made the cause visible)
+Affected areas: `hooks/codex_approver.py` (`secret_kind`, the commit collector),
+spec, `tests/test_codex_approver_*.py`
+
+Real declines from the cribbage repo: `web/package-lock.json` (66 lines of
+package names and URLs flagged `high_entropy`) and `tests/web/test_protocol.py`
+and `test_websocket.py` (`token="abc_DEF-123"` style fixtures hit the generic
+assignment pattern). Both are advisory declines on harmless commits.
+
+1. Lockfiles: for a file whose basename is a known lockfile (`package-lock.json`,
+   `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`,
+   `poetry.lock`, `uv.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`,
+   `flake.lock`) skip the entropy heuristic only. Every secret pattern still runs.
+2. Tests: for a file with a `tests`, `test` or `__tests__` directory component
+   skip only the two generic `password|secret|token|api_key = "value"` patterns.
+   The specific patterns (AWS key, GitHub/Slack/GitLab/npm tokens, JWT, private
+   key, bearer, `aws_secret_access_key`/`client_secret`/`private_key`
+   assignments, URL credentials) and the entropy heuristic still run.
+3. Applies to the file diffs of `claude-workflow commit` only; the commit message
+   and the push diff keep the full scan.
+4. Tests: lockfile package names no longer decline while a real token pattern
+   inside a lockfile still does; a fixture `token="..."` under `tests/` no longer
+   declines while a GitHub-shaped token there does; the same line outside
+   `tests/` and a `tests`-named file (not directory) still decline.
+5. Spec sentence; sync the hook file to `~/.claude`.
+
+Accepted risk: a file placed under a `tests/` directory can carry a generic
+`password = "..."` assignment without a `pattern` decline, and a lockfile can
+carry an unflagged random token that no pattern recognises. The approver is
+advice-only and Codex still reviews the diff.
+
+Completion: the two real cribbage commits' file contents no longer fail
+`no_secret_lines`; suite passes; mirror matches.
+
+Outcome (2026-10-17): steps 1-4 done in the working tree; 7 tests in
+`test_codex_approver_pathscan.py`, 290 approver tests pass. The real
+`web/package-lock.json`, `tests/web/test_protocol.py` and `test_websocket.py`
+from the cribbage repo scan clean with the path options and flagged without
+them. Not run: an independent bypass review (the change only relaxes two
+checks for path-selected files); the path match is case-sensitive, so
+`Tests/` or `Cargo.LOCK` keep the full scan. Still to do: spec sentence is
+written; commit and sync.
+
 ## Verification
 
 - Repository test suite (`python3 -m unittest` / the commands the repo

@@ -607,15 +607,33 @@ def decoded_variants(text):
     return urllib.parse.unquote(unescaped)
 
 
-def secret_kind(text):
+LOCKFILES = frozenset((
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "go.sum", "poetry.lock",
+    "uv.lock", "Pipfile.lock", "composer.lock", "Gemfile.lock", "flake.lock"))
+TEST_DIRECTORIES = frozenset(("tests", "test", "__tests__"))
+GENERIC_ASSIGNMENT_PATTERNS = frozenset(SECRET_PATTERNS[11:13])  # password|secret|token|api_key = "value"
+
+
+def scan_options(path):
+    """How to scan one committed file's diff. A lockfile carries hashes and long package names by design, so only
+    its entropy check is skipped; a test directory carries fixture credentials, so only the two generic assignment
+    patterns are relaxed. Every specific secret pattern runs on both."""
+    parts = path.split("/")
+    return {"entropy": parts[-1] not in LOCKFILES,
+            "relaxed": any(part in TEST_DIRECTORIES for part in parts[:-1])}
+
+
+def secret_kind(text, entropy=True, relaxed=False):
     """The kind of the first secret shape in the text ("pattern", "long_hex", "high_entropy"), else None. Patterns
     run on the text itself and with each line's leading diff marker removed (so a value split across lines is
-    seen whole)."""
+    seen whole). `entropy=False` skips the random-looking-token check; `relaxed` skips the generic assignment
+    patterns. Neither is used outside the per-file diff of a commit."""
     plain = "\n".join(line[1:] if line[:1] in "+- " else line for line in text.splitlines())
     decoded = decoded_variants(text)
-    if any(pattern.search(candidate) for pattern in SECRET_PATTERNS for candidate in (text, plain, decoded)):
+    patterns = [p for p in SECRET_PATTERNS if not (relaxed and p in GENERIC_ASSIGNMENT_PATTERNS)]
+    if any(pattern.search(candidate) for pattern in patterns for candidate in (text, plain, decoded)):
         return "pattern"
-    return entropy_kind(text) or entropy_kind(decoded)
+    return (entropy_kind(text) or entropy_kind(decoded)) if entropy else None
 
 
 def has_secret(text):
@@ -833,7 +851,7 @@ def collect_commit(ctx):
         facts["binary"] |= change["binary"]
         if change["status"] == "not_regular":
             facts["non_regular"].append(path)
-        kind = secret_kind(change["diff"])
+        kind = secret_kind(change["diff"], **scan_options(path))
         if kind:
             facts["secret_hits"].append({"path": path, "kind": kind})
             change["diff"] = "<withheld: secret-looking content>"
