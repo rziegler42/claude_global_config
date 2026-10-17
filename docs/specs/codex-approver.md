@@ -166,7 +166,12 @@ only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Fac
   diff, and any program the push would run (hooks, credential helper, `core.sshCommand`, and so on).
 - submit: exactly one of `--remote` (configured) or `--best`; `--ref` and `--snapshot` exclusive; the profile exists in
   the runner contract of the revision that runs (the working tree's for `--snapshot`); the revision is on an `origin`
-  branch as of the last fetch; origin is an ordinary https or ssh URL without credentials.
+  branch as of the last fetch; origin is an ordinary https or ssh URL without credentials. The facts also carry
+  `host_eligibility`: which configured remotes declare capabilities (`os`, `arch`, `cpu_cores`, `memory_gib`, `labels`
+  in the owner's remotes file) that satisfy the profile's requirements, using the same rules as `remote-runner`
+  (a test keeps the two in step) and failing closed when a requirement cannot be read. It holds remote names and
+  mismatch reasons, never the SSH host, workspace or job limits. Whether a runner is available right now stays
+  `remote-runner`'s own decision, so `--best` is appropriate when at least one configured remote is eligible.
 - fetch: a well-formed job on a configured remote; plain unique job-relative paths (at most 16); no `--force`; each
   local target is not git metadata, dot-prefixed, behind a link, existing, or tracked.
 - cancel: a well-formed job on a configured remote that belongs to this repository's project.

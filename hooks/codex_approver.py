@@ -1214,8 +1214,8 @@ REQUIREMENT_KEYS = ("os", "arch", "min_memory_gib", "min_cpu_cores", "labels")
 RETENTION_DEFAULTS = {"--success-days": 7.0, "--failure-days": 30.0}
 
 
-def runner_remotes(home):
-    """Names of the remotes in the owner's remotes file, or None when it cannot be read."""
+def runner_remote_table(home):
+    """The `[remotes]` table of the owner's remotes file as a dict, or None when it cannot be read."""
     import tomllib
     for relative in (".claude/remotes.toml", ".config/remote-runner/remotes.toml"):
         path = os.path.join(home, relative)
@@ -1227,8 +1227,80 @@ def runner_remotes(home):
             table = tomllib.loads(data.decode("utf-8")).get("remotes") if len(data) <= READ_CAP else None
         except (OSError, UnicodeDecodeError, ValueError):
             return None
-        return sorted(table) if isinstance(table, dict) else None
+        return table if isinstance(table, dict) else None
     return None
+
+
+def runner_remotes(home):
+    """Names of the remotes in the owner's remotes file, or None when it cannot be read."""
+    table = runner_remote_table(home)
+    return None if table is None else sorted(table)
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def capability_mismatches(capabilities, requirements):
+    """Why a remote's declared capabilities miss a profile's requirements (mirrors `capability_mismatches` in
+    bin/remote-runner, which decides eligibility for real; a test keeps the two in step). Fails closed."""
+    if not isinstance(capabilities, dict):
+        return ["capabilities is not a table"]
+    found = []
+    for key in sorted(set(requirements) - set(REQUIREMENT_KEYS)):
+        found.append("unknown requirement")
+    for key in ("os", "arch"):
+        required = requirements.get(key)
+        if required is None:
+            continue
+        if not isinstance(required, str):
+            found.append("%s requirement is not a string" % key)
+        elif capabilities.get(key) != required:
+            found.append("%s does not match" % key)
+    for key in ("min_memory_gib", "min_cpu_cores"):
+        required = requirements.get(key)
+        if required is None:
+            continue
+        available = capabilities.get(key.removeprefix("min_"))
+        if not _number(required):
+            found.append("%s requirement is not a finite number" % key)
+        elif not _number(available) or not available >= required:
+            found.append("%s is not met" % key)
+    required_labels, available_labels = requirements.get("labels", []), capabilities.get("labels", [])
+    strings = lambda value: isinstance(value, list) and all(isinstance(x, str) for x in value)
+    if not strings(required_labels) or not strings(available_labels):
+        found.append("labels are malformed")
+    elif set(required_labels) - set(available_labels):
+        found.append("a required label is missing")
+    return found
+
+
+def host_eligibility(home, profile_details, best, remote):
+    """Which configured remotes declare capabilities that satisfy the profile, from local files only.
+
+    Nothing contacts a remote and the SSH host, workspace and job limits are never read into the facts. Live
+    availability is `remote-runner`'s own decision when it picks a runner.
+    """
+    table = runner_remote_table(home)
+    facts = {"checked": False, "configured": None, "eligible": [], "ineligible": {}, "named_remote_eligible": None}
+    if table is None or profile_details is None:
+        return facts
+    requirements = profile_details.get("requirements") if isinstance(profile_details.get("requirements"), dict) else {}
+    facts["checked"] = profile_details.get("requirements_ok", True) is True
+    facts["configured"] = sorted(table)[:30]
+    for name in facts["configured"]:
+        config = table[name]
+        capabilities = config.get("capabilities", {}) if isinstance(config, dict) else None
+        reasons = capability_mismatches(capabilities, requirements)
+        if not facts["checked"]:
+            reasons = reasons + ["the profile's requirements could not be read in full"]
+        if reasons:
+            facts["ineligible"][name] = sorted(set(reasons))
+        else:
+            facts["eligible"].append(name)
+    if remote is not None:
+        facts["named_remote_eligible"] = remote in facts["eligible"] if remote in facts["configured"] else None
+    return facts
 
 
 def job_parts(job):
@@ -1263,12 +1335,16 @@ def read_contract(helper, root, commit):
     if isinstance(profiles, dict):
         for name, profile in list(profiles.items())[:30]:
             if isinstance(profile, dict) and isinstance(profile.get("command"), str) and PROFILE_NAME_RE.fullmatch(name):
-                required = profile.get("requirements") if isinstance(profile.get("requirements"), dict) else {}
+                declared = profile.get("requirements")
+                required = declared if isinstance(declared, dict) else {}
+                kept = {key: required[key] for key in REQUIREMENT_KEYS if key in required
+                        and (isinstance(required[key], (str, int, float, bool)) or (
+                            isinstance(required[key], list) and all(isinstance(x, str) for x in required[key])))}
                 result["profiles"][name] = {
-                    "command": profile["command"][:PROFILE_COMMAND_CAP],
-                    "requirements": {key: required[key] for key in REQUIREMENT_KEYS if key in required
-                                     and (isinstance(required[key], (str, int, float, bool)) or (
-                                         isinstance(required[key], list) and all(isinstance(x, str) for x in required[key])))}}
+                    "command": profile["command"][:PROFILE_COMMAND_CAP], "requirements": kept,
+                    # False when a requirement was dropped (unknown key, odd type) or the table is not a table:
+                    # eligibility computed from what is left would silently relax the profile.
+                    "requirements_ok": len(kept) == len(required) and (declared is None or isinstance(declared, dict))}
     return result
 
 
@@ -1281,7 +1357,8 @@ def collect_submit(ctx):
              "commit": None, "head": None, "commit_is_head": None, "pushed_to_origin": None,
              "pushed_base": "an origin remote-tracking branch contains the commit, as of the last fetch",
              "origin": None, "contract": None, "profile_known": False, "profile_details": None,
-             "exec_config": repo_exec_findings(helper, root), "secret_hits": [], "ref_error": None}
+             "exec_config": repo_exec_findings(helper, root), "secret_hits": [], "ref_error": None,
+             "host_eligibility": None}
     head = git_bytes(helper, root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
     facts["head"] = head.decode("ascii", "replace").strip() if head else None
     ref = args["--ref"] or "HEAD"
@@ -1311,6 +1388,7 @@ def collect_submit(ctx):
     details = contract["profiles"].get(args["--profile"])
     facts["profile_known"] = details is not None
     facts["profile_details"] = details
+    facts["host_eligibility"] = host_eligibility(ctx["home"], details, args["--best"], args["--remote"])
     kind = secret_kind("\n".join([args["--profile"], ref, (details or {}).get("command", "")]))
     if kind:
         facts["secret_hits"].append({"path": "<profile-or-ref>", "kind": kind})

@@ -170,6 +170,100 @@ class SubmitTests(RunnerCase):
         self.assertEqual(result["facts"]["contract"]["error"], "contract_missing_or_unreadable")
 
 
+class HostEligibilityTests(RunnerCase):
+    """Increment I: which configured remotes satisfy the profile, worked out from local files only."""
+
+    PROFILE = ('\n[profiles.bench]\ncommand = "make bench"\n\n[profiles.bench.requirements]\n'
+               'os = "linux"\nmin_cpu_cores = 8\nlabels = ["verilator"]\n')
+
+    def remotes(self, **capabilities):
+        lines = ['[remotes.ned]', 'ssh_host = "secret-host.invalid"', 'workspace_root = "/private/ws"', 'max_jobs = 2']
+        if capabilities:
+            lines.append("[remotes.ned.capabilities]")
+            lines += ["%s = %s" % (key, json.dumps(value)) for key, value in capabilities.items()]
+        (self.home / ".claude" / "remotes.toml").write_text("\n".join(lines) + "\n")
+
+    def eligibility(self, command="remote-runner submit --best --profile bench --snapshot"):
+        self.write(".claude/remote-runner.toml", CONTRACT + self.PROFILE)
+        return self.facts(command)["host_eligibility"]
+
+    def test_a_remote_that_meets_the_profile_is_eligible(self):
+        self.remotes(os="linux", cpu_cores=8, memory_gib=32, labels=["verilator", "yosys"])
+        found = self.eligibility()
+        self.assertEqual((found["checked"], found["configured"], found["eligible"], found["ineligible"]),
+                         (True, ["ned"], ["ned"], {}))
+        self.assertIsNone(found["named_remote_eligible"])
+
+    def test_a_named_remote_is_judged_on_its_own_capabilities(self):
+        self.remotes(os="linux", cpu_cores=8, labels=["verilator"])
+        self.assertTrue(self.eligibility("remote-runner submit --remote ned --profile bench --snapshot")
+                        ["named_remote_eligible"])
+        self.remotes(os="linux", cpu_cores=4, labels=["verilator"])
+        found = self.eligibility("remote-runner submit --remote ned --profile bench --snapshot")
+        self.assertIs(found["named_remote_eligible"], False)
+        self.assertEqual(found["eligible"], [])
+        self.assertEqual(found["ineligible"], {"ned": ["min_cpu_cores is not met"]})
+
+    def test_missing_or_wrong_capabilities_are_ineligible(self):
+        for capabilities in ({}, {"os": "macos", "cpu_cores": 16, "labels": ["verilator"]},
+                             {"os": "linux", "cpu_cores": 16, "labels": []},
+                             {"os": "linux", "cpu_cores": "16", "labels": ["verilator"]}):
+            with self.subTest(capabilities=capabilities):
+                self.remotes(**capabilities)
+                found = self.eligibility()
+                self.assertEqual((found["eligible"], sorted(found["ineligible"])), ([], ["ned"]))
+
+    def test_an_unknown_named_remote_is_neither_eligible_nor_configured(self):
+        self.remotes(os="linux", cpu_cores=8, labels=["verilator"])
+        found = self.eligibility("remote-runner submit --remote nosuch --profile bench --snapshot")
+        self.assertIsNone(found["named_remote_eligible"])
+        self.assertEqual(found["configured"], ["ned"])
+
+    def test_no_remotes_file_means_nothing_is_checked(self):
+        (self.home / ".claude" / "remotes.toml").unlink()
+        found = self.eligibility()
+        self.assertEqual((found["checked"], found["configured"], found["eligible"]), (False, None, []))
+
+    def test_a_profile_requirement_that_cannot_be_read_fails_closed(self):
+        self.remotes(os="linux", cpu_cores=8, labels=["verilator"])
+        self.write(".claude/remote-runner.toml", CONTRACT + '\n[profiles.odd]\ncommand = "x"\n'
+                   '[profiles.odd.requirements]\nos = "linux"\nmystery = 1\n')
+        found = self.facts("remote-runner submit --best --profile odd --snapshot")["host_eligibility"]
+        self.assertEqual((found["checked"], found["eligible"]), (False, []))
+
+    def test_a_profile_without_requirements_accepts_any_configured_remote(self):
+        self.remotes()
+        self.write(".claude/remote-runner.toml", CONTRACT + '\n[profiles.plain]\ncommand = "make plain"\n')
+        found = self.facts("remote-runner submit --best --profile plain --snapshot")["host_eligibility"]
+        self.assertEqual((found["checked"], found["eligible"], found["ineligible"]), (True, ["ned"], {}))
+
+    def test_the_facts_never_carry_host_details(self):
+        self.remotes(os="linux", cpu_cores=8, labels=["verilator"])
+        self.write(".claude/remote-runner.toml", CONTRACT + self.PROFILE)
+        text = ca.canonical_facts(self.facts("remote-runner submit --best --profile bench --snapshot"))
+        self.assertNotIn("secret-host.invalid", text)
+        self.assertNotIn("/private/ws", text)
+
+    def test_it_agrees_with_the_real_remote_runner(self):
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("remote_runner_real", str(ROOT / "bin" / "remote-runner"))
+        spec = importlib.util.spec_from_loader("remote_runner_real", loader)
+        real = importlib.util.module_from_spec(spec)
+        loader.exec_module(real)
+        capabilities = [{}, {"os": "linux", "arch": "arm64", "cpu_cores": 8, "memory_gib": 16, "labels": ["a", "b"]},
+                        {"os": "linux", "cpu_cores": 7, "memory_gib": 64, "labels": ["a"]},
+                        {"os": "linux", "cpu_cores": "8", "labels": ["a"]}, {"labels": "a"}]
+        requirements = [{}, {"os": "linux"}, {"os": 3}, {"arch": "arm64", "min_cpu_cores": 8},
+                        {"min_memory_gib": 32}, {"min_memory_gib": "x"}, {"labels": ["a"]}, {"labels": ["a", "c"]},
+                        {"labels": "a"}, {"bogus": 1}]
+        for have in capabilities:
+            for need in requirements:
+                with self.subTest(have=have, need=need):
+                    self.assertEqual(bool(ca.capability_mismatches(have, need)),
+                                     bool(real.capability_mismatches({"capabilities": have}, need)))
+
+
 class FetchTests(RunnerCase):
     def fetch(self, *words):
         return self.analyze("remote-runner fetch " + " ".join(words))

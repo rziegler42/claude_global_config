@@ -435,6 +435,24 @@ Completion: the cribbage `search-bench` submit fixture no longer declines on
 `host_selection_is_appropriate`; fixtures that should decline still do; suite
 passes; mirror matches.
 
+Outcome (2026-10-17): steps 1-3 done in the working tree; commit and sync
+pending. The owner's remotes file declares per-remote `capabilities` (`os`, `arch`,
+`cpu_cores`, `memory_gib`, `labels`), so the collector now computes
+`host_eligibility` (configured, eligible, ineligible with reasons, and
+`named_remote_eligible`) with a local copy of `remote-runner`'s
+`capability_mismatches`, failing closed when a profile requirement was dropped
+(`requirements_ok`). The rubric criterion reads those facts instead of guessing.
+It is a rubric change only; no deterministic check or rule JSON changed. 9 new
+tests in `HostEligibilityTests`, including a parity test against the real
+`bin/remote-runner`; 304 approver tests pass. On the real cribbage contract the
+collector reports `ned` eligible for `reproduce` (linux, 8 cores) and
+`web-check`. Not run: the `search-bench` profile no longer exists in the working
+tree, so the exact failing command was not replayed; Codex itself was not
+re-run on it (the live rubric is not synced); no independent security review
+(the change adds facts from a file the collector already read, and no host
+detail enters them). Still to do: commit; sync hook file, then rubric; watch the
+next real `submit --best` prompt.
+
 ## Verification
 
 - Repository test suite (`python3 -m unittest` / the commands the repo
