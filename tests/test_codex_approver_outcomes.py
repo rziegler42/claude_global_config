@@ -185,11 +185,39 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["matrix"]["approve"]["not_run"], 1)
         self.assertEqual(report["unprompted"], 1)
 
-    def test_an_outcome_before_the_prompt_or_long_after_it_does_not_pair(self):
-        report = self.report([verdict(100, "approve")], [outcome(50, "ran")])
+    def test_an_outcome_well_before_the_prompt_or_long_after_it_does_not_pair(self):
+        report = self.report([verdict(100, "approve")], [outcome(10, "ran")])
         self.assertEqual(report["matrix"]["approve"]["not_run"], 1)
         report = self.report([verdict(0, "approve")], [outcome(3 * 3600, "ran")])
         self.assertEqual(report["matrix"]["approve"]["not_run"], 1)
+
+    def test_an_outcome_stamped_just_before_the_verdict_still_pairs(self):
+        # The advice-only approver can answer after the owner already ran the command.
+        report = self.report([verdict(100, "approve")], [outcome(97, "ran")])
+        self.assertEqual(report["matrix"]["approve"], {"ran": 1, "ran_failed": 0, "not_run": 0})
+        self.assertEqual(report["unprompted"], 0)
+        self.assertEqual(report["disagreements"], [])
+
+    def test_a_decline_whose_outcome_came_first_is_an_override(self):
+        report = self.report([verdict(100, "decline")], [outcome(97, "ran")])
+        self.assertEqual(report["matrix"]["decline"]["ran"], 1)
+        self.assertEqual([(d["verdict"], d["outcome"]) for d in report["disagreements"]], [("decline", "ran")])
+
+    def test_started_ts_is_the_reference_when_present(self):
+        late = verdict(100, "approve", started_ts=iso(10))
+        self.assertEqual(self.report([late], [outcome(30, "ran")])["matrix"]["approve"]["ran"], 1)
+        self.assertEqual(self.report([verdict(100, "approve")], [outcome(30, "ran")])["matrix"]["approve"]["not_run"], 1)
+
+    def test_a_repeated_command_pairs_each_verdict_with_its_own_outcome(self):
+        report = self.report([verdict(0, "approve"), verdict(5000, "approve")],
+                             [outcome(-2, "ran"), outcome(5002, "ran_failed")])
+        self.assertEqual(report["matrix"]["approve"], {"ran": 1, "ran_failed": 1, "not_run": 0})
+        self.assertEqual(report["unprompted"], 0)
+
+    def test_the_nearest_outcome_wins_when_two_are_in_range(self):
+        report = self.report([verdict(100, "approve")], [outcome(10, "ran"), outcome(101, "ran_failed")])
+        self.assertEqual(report["matrix"]["approve"], {"ran": 0, "ran_failed": 1, "not_run": 0})
+        self.assertEqual(report["unprompted"], 1)
 
     def test_recent_verdicts_are_pending_not_counted_as_not_run(self):
         recent = {"ts": (NOW - datetime.timedelta(seconds=60)).isoformat(), "rule": "r", "verdict": "approve",

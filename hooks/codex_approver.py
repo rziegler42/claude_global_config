@@ -1917,6 +1917,9 @@ POST_EVENTS = ("PostToolUse", "PostToolUseFailure")
 ID_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 EXIT_CODE = re.compile(r"Exit code (-?\d{1,3})")
 PAIR_WINDOW = 1800  # seconds the owner may take to answer a prompt before it counts as unanswered
+# The advice-only approver may answer after the owner has already run the command, so an outcome can be stamped
+# slightly before its verdict. Older rows have only the append time, which is later than the prompt by the Codex time.
+PAIR_EARLY = 60
 REPORT_DECISIONS = ("approve", "decline", "no_verdict")
 
 
@@ -2174,11 +2177,13 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
             continue
         session, digest, pair = row.get("session_id"), row.get("command_sha256"), None
         if session and digest:
+            prompted = parse_ts(row.get("started_ts")) or ts
+            best = None
             for index, (ots, orow) in enumerate(outcome_rows):
+                delta = (ots - prompted).total_seconds()
                 if (index not in used and orow.get("session_id") == session and orow.get("command_sha256") == digest
-                        and 0 <= (ots - ts).total_seconds() <= window):
-                    pair = index
-                    break
+                        and -PAIR_EARLY <= delta <= window and (best is None or abs(delta) < best)):
+                    pair, best = index, abs(delta)
         if pair is not None:
             used.add(pair)
             result = outcome_rows[pair][1].get("outcome")
@@ -2300,6 +2305,7 @@ def report_command(argv):
 def process(raw):
     if len(raw) > MAX_STDIN:
         return
+    started = now_iso()
     event = json.loads(raw)
     if isinstance(event, dict) and event.get("hook_event_name") in POST_EVENTS:
         return process_outcome(event)
@@ -2316,7 +2322,7 @@ def process(raw):
     entry = {
         "ts": now_iso(), "rule": rule["id"], "verdict": verdict["verdict"], "reason": verdict["reason"],
         "failed_checks": verdict["failed"], "mode": config["mode"], "command_sha256": command_digest(command),
-        "session_id": safe_id(event.get("session_id")),
+        "session_id": safe_id(event.get("session_id")), "started_ts": started,
     }
     for key in ("reason_text", "codex_model", "codex_seconds", "facts_sha256", "secret_kinds",
                 "secret_paths"):

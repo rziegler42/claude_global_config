@@ -214,9 +214,12 @@ ran: rule, a digest of the command, session id, tool use id, `ran` or `ran_faile
 that absence is the signal that the owner (or the session) did not run it.
 
 `python3 ~/.claude/hooks/codex_approver.py --report [--days N]` pairs each verdict with the outcome of the same command
-in the same session within 30 minutes and prints a verdict-by-outcome table, the agreement rate (approve then ran,
+in the same session within 30 minutes (the nearest unused outcome wins) and prints a verdict-by-outcome table, the agreement rate (approve then ran,
 decline then not run), the disagreements with their reasons, and runs that had no prompt. Prompts younger than 30
-minutes are counted as awaiting an answer. The report is the evidence for deciding on increment 2.
+minutes are counted as awaiting an answer. The approver is advice-only and may answer after the owner has already
+run the command, so each verdict also records `started_ts` (when the hook began) and an outcome stamped up to 60
+seconds before that time still pairs; rows without `started_ts` use the append time `ts`. The report is the evidence
+for deciding on increment 2.
 
 ### Prompts that match no rule
 

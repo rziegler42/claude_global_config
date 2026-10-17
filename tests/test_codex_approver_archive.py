@@ -231,6 +231,7 @@ class EndToEndArchiveTests(ArchiveCase):
         verdict, outcome = self.rows("verdicts.jsonl")[0], self.rows("outcomes.jsonl")[0]
         self.assertEqual((verdict["rule"], verdict["failed_checks"]), ("ask-codex-archive", []))
         self.assertEqual((outcome["rule"], outcome["outcome"]), ("ask-codex-archive", "ran"))
+        self.assertLessEqual(verdict["started_ts"], verdict["ts"])
         report = ca.build_report(self.rows("verdicts.jsonl"), self.rows("outcomes.jsonl"))
         self.assertIn("ask-codex-archive", report["by_rule"])
 

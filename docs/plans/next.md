@@ -22,6 +22,10 @@ so `--report` shows Codex/owner agreement for them.
 - Update `docs/specs/codex-approver.md` and ADR 0004; mirror to `~/.claude`.
 - Increment F: record the shape (never the arguments) of prompts that match no
   rule, with a `--report --unmatched` view.
+- Increment H: pair verdicts with outcomes that arrive before the verdict row,
+  so `--report` agreement is not understated.
+- Increment I: let the `remote-runner submit --best` host check pass from local
+  facts.
 
 ## Non-goals
 
@@ -351,6 +355,85 @@ them. Not run: an independent bypass review (the change only relaxes two
 checks for path-selected files); the path match is case-sensitive, so
 `Tests/` or `Cargo.LOCK` keep the full scan. Still to do: spec sentence is
 written; commit and sync.
+
+### Increment H — Pair verdicts with outcomes that arrive first (requested by the owner 2026-10-17)
+
+Dependencies: C (outcome hooks), the `--report` pairing in `build_report`
+Affected areas: `hooks/codex_approver.py` (`build_report`, verdict timestamp),
+spec, `tests/test_codex_approver_*.py`
+
+Evidence (2026-10-17, read-only): the verdict row is appended after Codex
+answers (5-10 s), but the approver is advice-only, so the owner can answer the
+prompt first. In 15 of 40 real rows the outcome is stamped 1-5 s before the
+verdict. `build_report` requires `0 <= outcome_ts - verdict_ts <= window`, so
+those pairs were counted twice: as "approved, not run" and as "ran without a
+prompt". By session and command hash every verdict with outcome data was
+followed by the command running (all approves, and all 8 declines, a result the
+report hid for one decline).
+
+1. Stamp each verdict row with the time the hook started, in addition to the
+   append time (`ts` stays the append time so older rows keep their meaning).
+2. Pair on session and command hash within `-window_early <= delta <= window`,
+   where the early bound is small and named (60 s), and prefer the nearest
+   unused outcome when a command repeats. Rows without the new field use the
+   early bound against `ts`.
+3. "Awaiting an answer" counts only verdicts with no outcome and younger than
+   the window.
+4. Tests: outcome 3 s before the verdict pairs; outcome 90 s before does not;
+   a repeated command pairs each verdict with its own outcome; a decline whose
+   outcome precedes it reports as an override; old rows without the new field
+   still pair.
+5. Spec sentence; sync the hook file to `~/.claude`.
+
+Completion: re-running `--report` on the current logs shows no "ran without a
+prompt" for pairs that share a session and hash, and the approve/decline
+totals match the hash-join figures above; suite passes; mirror matches.
+
+Outcome (2026-10-17): steps 1-5 done in the working tree except commit and sync.
+`PAIR_EARLY = 60` s; pairing takes the nearest unused outcome by `started_ts`
+(or `ts` on older rows); 5 new report tests, one existing test changed from a
+50 s to a 90 s early outcome, and a `started_ts <= ts` assertion; 295 approver
+tests pass. The repo hook run on the live logs reports 45 verdicts, 0 awaiting,
+0 "ran without a prompt", and every verdict that has outcome data followed by
+the command running (32 approve, 9 decline, 1 decline that failed). Remaining
+"not run" rows (2 approve, 1 decline) are the three 2026-10-16 17:14-17:25 rows
+logged before outcome rows existed; they have no outcome data, so the 73%
+agreement figure still mixes them in. Excluding rows older than the first
+outcome row is not done. Still to do: commit and sync (hook file first).
+
+### Increment I — Host check for `remote-runner submit --best` (requested by the owner 2026-10-17)
+
+Dependencies: C (remote-runner collector and rubric)
+Affected areas: `hooks/codex_approver.py` (submit facts), `codex-approver/rubric.md`,
+`codex-approver/rules/remote-runner-submit.json`, spec, tests
+
+Evidence (2026-10-17, cribbage): a bare `remote-runner submit --best --profile
+search-bench --snapshot` was declined on `host_selection_is_appropriate`
+because the facts show no remote capabilities, so Codex "cannot establish"
+that the host meets the profile's Linux and eight-core requirements. The owner
+ran it and it succeeded. The criterion cannot pass for `--best`, where
+`remote-runner` chooses the runner itself from declared requirements.
+
+1. Facts stay local: no SSH and no `remote-runner recommend`. Add to the submit
+   facts what the local remote configuration and the profile already declare:
+   configured remote names, the profile's declared requirements, and for a named
+   remote its declared labels when the local config holds them (confirm in the
+   code what the config exposes before writing the check).
+2. Rubric: for `--best`, the criterion passes when the profile declares
+   requirements and at least one remote is configured, because `remote-runner`
+   itself refuses an ineligible or unavailable runner. For a named remote it
+   passes only when that remote is configured and, where its labels are known,
+   they satisfy the profile. Anything else, including an unknown remote or a
+   `--best` with no declared requirements and no configured remote, still fails.
+3. Tests: `--best` with requirements and a configured remote passes; `--best`
+   with no remotes fails; a named unknown remote fails; a named remote whose
+   labels miss a requirement fails; the real cribbage `search-bench` shape as a
+   fixture.
+4. Spec and rubric text; sync hook file first, then rules and rubric.
+
+Completion: the cribbage `search-bench` submit fixture no longer declines on
+`host_selection_is_appropriate`; fixtures that should decline still do; suite
+passes; mirror matches.
 
 ## Verification
 
