@@ -254,6 +254,76 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("d1", text.replace("disagreement", ""))
 
 
+class DelegatedReportTests(unittest.TestCase):
+    """A delegated allow ran with no dialog, so the owner judged nothing: it must not count as agreement."""
+
+    EMPTY = {"total": 0, "ran": 0, "ran_failed": 0, "no_outcome": 0, "pending": 0, "by_rule": {}}
+
+    def report(self, verdicts, outcomes, **kw):
+        return ca.build_report(verdicts, outcomes, now=NOW, **kw)
+
+    def allowed(self, seconds, **extra):
+        return verdict(seconds, "approve", decision="allow", **extra)
+
+    def test_an_allow_that_ran_is_counted_apart_from_the_advice_figures(self):
+        report = self.report([self.allowed(0)], [outcome(3, "ran")])
+        self.assertEqual(report["delegated"], dict(self.EMPTY, total=1, ran=1,
+                                                   by_rule={"claude-workflow-commit": 1}))
+        self.assertEqual(report["matrix"]["approve"], {"ran": 0, "ran_failed": 0, "not_run": 0})
+        self.assertEqual(report["agreement"], {"agree": 0, "decided": 0})
+        self.assertEqual((report["unprompted"], report["pending"], report["disagreements"]), (0, 0, []))
+        self.assertEqual(report["by_rule"], {})
+
+    def test_a_failed_run_is_visible(self):
+        report = self.report([self.allowed(0)], [outcome(3, "ran_failed")])
+        self.assertEqual((report["delegated"]["ran"], report["delegated"]["ran_failed"]), (0, 1))
+
+    def test_an_allow_with_no_outcome_is_unconfirmed_after_the_window_and_pending_before_it(self):
+        report = self.report([self.allowed(-7200)], [])
+        self.assertEqual((report["delegated"]["no_outcome"], report["delegated"]["pending"]), (1, 0))
+        recent = dict(self.allowed(0), ts=(NOW - datetime.timedelta(seconds=60)).isoformat())
+        report = self.report([recent], [])
+        self.assertEqual((report["delegated"]["no_outcome"], report["delegated"]["pending"]), (0, 1))
+        self.assertEqual(report["pending"], 0)
+
+    def test_advice_rows_are_unchanged_beside_delegated_ones(self):
+        report = self.report(
+            [verdict(0, "approve", digest="a", decision="none"), verdict(10, "decline", digest="b", decision="none"),
+             verdict(20, "approve", digest="c"), self.allowed(30, digest="d")],
+            [outcome(3, "ran", digest="a"), outcome(13, "ran", digest="b"), outcome(23, "ran", digest="c"),
+             outcome(33, "ran", digest="d")])
+        self.assertEqual(report["matrix"]["approve"], {"ran": 2, "ran_failed": 0, "not_run": 0})
+        self.assertEqual(report["matrix"]["decline"], {"ran": 1, "ran_failed": 0, "not_run": 0})
+        self.assertEqual(report["agreement"], {"agree": 2, "decided": 3})
+        self.assertEqual(report["delegated"]["total"], 1)
+        self.assertEqual(report["unprompted"], 0)
+
+    def test_only_an_approve_can_be_a_delegated_allow(self):
+        report = self.report([verdict(0, "decline", decision="allow")], [outcome(3, "ran")])
+        self.assertEqual(report["delegated"], self.EMPTY)
+        self.assertEqual(report["matrix"]["decline"]["ran"], 1)
+
+    def test_rows_without_a_decision_field_are_advice(self):
+        report = self.report([verdict(0, "approve")], [outcome(3, "ran")])
+        self.assertEqual(report["delegated"], self.EMPTY)
+        self.assertEqual(report["matrix"]["approve"]["ran"], 1)
+
+    def test_the_text_report_shows_delegated_allows_and_does_not_hide_them_when_alone(self):
+        text = ca.format_report(self.report(
+            [self.allowed(0, digest="a"), self.allowed(10, digest="b"), self.allowed(-7200, digest="c")],
+            [outcome(3, "ran", digest="a"), outcome(13, "ran_failed", digest="b")]))
+        self.assertNotIn("No verdicts", text)
+        self.assertIn("Allowed by Codex without a prompt (delegated): 3", text)
+        self.assertIn("ran 1, ran+failed 1, no outcome 1", text)
+        self.assertIn("claude-workflow-commit", text)
+        self.assertNotIn("Agreement", text)
+
+    def test_the_text_report_is_unchanged_when_nothing_was_delegated(self):
+        text = ca.format_report(self.report([verdict(0, "approve")], [outcome(3, "ran")]))
+        self.assertNotIn("Allowed by Codex", text)
+        self.assertIn("Agreement (approve -> ran, decline -> not run): 1 of 1 = 100%", text)
+
+
 class ReportCommandTests(HookCase):
     def test_report_flag_prints_a_summary_and_does_not_read_stdin_or_decide(self):
         self.run_hook({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": COMMAND},

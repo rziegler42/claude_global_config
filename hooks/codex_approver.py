@@ -2259,6 +2259,7 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
     cutoff = now - datetime.timedelta(days=days) if days else None
     verdict_rows, outcome_rows = timed(verdicts, cutoff), timed(outcomes, cutoff)
     used, pending, disagreements = set(), 0, []
+    allowed = {"total": 0, "ran": 0, "ran_failed": 0, "no_outcome": 0, "pending": 0, "by_rule": {}}
     matrix = {kind: {"ran": 0, "ran_failed": 0, "not_run": 0} for kind in REPORT_DECISIONS}
     by_rule = {}
     for ts, row in verdict_rows:
@@ -2274,17 +2275,27 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
                 if (index not in used and orow.get("session_id") == session and orow.get("command_sha256") == digest
                         and -PAIR_EARLY <= delta <= window and (best is None or abs(delta) < best)):
                     pair, best = index, abs(delta)
+        # A delegated allow ran with no dialog, so the owner judged nothing: count it apart from the advice figures.
+        delegated = kind == "approve" and row.get("decision") == "allow"
+        rule_id = row.get("rule") if isinstance(row.get("rule"), str) else "?"
         if pair is not None:
             used.add(pair)
             result = outcome_rows[pair][1].get("outcome")
             result = result if result in ("ran", "ran_failed") else "ran"
         elif (now - ts).total_seconds() < window:
-            pending += 1
+            if delegated:
+                allowed["pending"] += 1
+            else:
+                pending += 1
             continue
         else:
             result = "not_run"
+        if delegated:
+            allowed["total"] += 1
+            allowed["no_outcome" if result == "not_run" else result] += 1
+            allowed["by_rule"][rule_id] = allowed["by_rule"].get(rule_id, 0) + 1
+            continue
         matrix[kind][result] += 1
-        rule_id = row.get("rule") if isinstance(row.get("rule"), str) else "?"
         by_rule.setdefault(rule_id, {k: {"ran": 0, "ran_failed": 0, "not_run": 0} for k in REPORT_DECISIONS})[kind][result] += 1
         if (kind == "approve" and result == "not_run") or (kind == "decline" and result != "not_run"):
             disagreements.append({
@@ -2296,14 +2307,15 @@ def build_report(verdicts, outcomes, window=PAIR_WINDOW, now=None, days=None):
     return {"matrix": matrix, "pending": pending, "disagreements": disagreements,
             "unprompted": len(outcome_rows) - len(used), "agreement": {"agree": agree, "decided": decided},
             "by_rule": {rule_id: rule_agreement(rows) for rule_id, rows in sorted(by_rule.items())},
-            "days": days}
+            "delegated": allowed, "days": days}
 
 
 def format_report(report):
     matrix = report["matrix"]
     total = sum(sum(row.values()) for row in matrix.values()) + report["pending"]
+    allowed = report["delegated"]
     period = "last %d days" % report["days"] if report["days"] else "all time"
-    if total == 0:
+    if total == 0 and not (allowed["total"] or allowed["pending"]):
         return "No verdicts recorded (%s).\n" % period
     lines = ["Codex approver report (%s)" % period,
              "Verdicts: %d (%d still awaiting an answer)" % (total, report["pending"]), "",
@@ -2316,6 +2328,11 @@ def format_report(report):
         lines += ["", "Agreement (approve -> ran, decline -> not run): %d of %d = %.0f%%" % (
             agreement["agree"], agreement["decided"], 100.0 * agreement["agree"] / agreement["decided"])]
     lines.append("Ran without a prompt (always-allowed or not covered): %d" % report["unprompted"])
+    if allowed["total"] or allowed["pending"]:
+        lines += ["", "Allowed by Codex without a prompt (delegated): %d (%d still awaiting an outcome)" % (
+            allowed["total"], allowed["pending"]),
+            "  ran %d, ran+failed %d, no outcome %d" % (allowed["ran"], allowed["ran_failed"], allowed["no_outcome"])]
+        lines += ["  %-28s %d" % (rule_id[:28], count) for rule_id, count in sorted(allowed["by_rule"].items())]
     if len(report["by_rule"]) > 1:
         lines += ["", "%-28s %8s %8s %8s" % ("rule", "approve", "decline", "agreed")]
         for rule_id, item in report["by_rule"].items():
