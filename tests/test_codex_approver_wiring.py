@@ -115,9 +115,10 @@ class SettingsWiringTests(unittest.TestCase):
                            env={"PATH": "relative:", "HOME": "/nonexistent"})
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
-    def test_shipped_config_is_advice_only(self):
+    def test_shipped_config_delegates_the_commit_rule_and_nothing_else(self):
+        # ADR 0005. Revoking the authority means mode "advise" with an empty list (also valid); never any other rule.
         config = json.loads((ROOT / "codex-approver" / "config.json").read_text())
-        self.assertEqual(config["mode"], "advise")
+        self.assertEqual((config["mode"], config["delegate"]), ("delegate", ["claude-workflow-commit"]))
 
     def test_the_hook_is_not_a_permission_rule_and_no_rule_was_relaxed(self):
         permissions = settings()["permissions"]
@@ -125,10 +126,12 @@ class SettingsWiringTests(unittest.TestCase):
         # rules that make any edit of the approver's code, rules or config (including the delegate switch) prompt.
         named = {(tier, rule) for tier in ("allow", "ask", "deny") for rule in permissions.get(tier, [])
                  if "codex_approver" in rule or "codex-approver" in rule}
-        self.assertEqual(named, {("ask", "%s(%s)" % (tool, path)) for tool in ("Edit", "Write")
+        self.assertEqual(named, {("ask", "Edit(%s)" % path)
                                  for path in ("~/.claude/codex-approver/**", "~/.claude/hooks/codex_approver.py")})
+        # Claude Code matches file permissions with Edit rules only (they cover every file-editing tool); a Write
+        # rule is reported at startup as never matching.
         protected = {rule for rule in permissions["ask"] if rule.startswith(("Edit(", "Write("))}
-        self.assertEqual(protected, {"%s(%s)" % (tool, path) for tool in ("Edit", "Write") for path in (
+        self.assertEqual(protected, {"Edit(%s)" % path for path in (
             "~/.claude/codex-approver/**", "~/.claude/hooks/codex_approver.py", "~/.claude/bin/claude-workflow")})
         for command in ("commit", "remove"):
             self.assertTrue(any(rule.endswith("claude-workflow %s:*)" % command) for rule in permissions["ask"]))

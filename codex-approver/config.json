@@ -1,9 +1,11 @@
 {
-  "mode": "advise",
+  "mode": "delegate",
   "model": "gpt-6.1-sol",
   "effort": "medium",
   "codex_timeout_seconds": 15,
   "max_log_bytes": 5242880,
   "notify": true,
-  "delegate": []
+  "delegate": [
+    "claude-workflow-commit"
+  ]
 }

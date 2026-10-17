@@ -233,6 +233,7 @@ class HookEndToEndTests(CodexCase):
         shutil.copytree(ROOT / "codex-approver", claude / "codex-approver", ignore=shutil.ignore_patterns("log"))
         config = json.loads((claude / "codex-approver" / "config.json").read_text())
         config["notify"] = False
+        config.update(mode="advise", delegate=[])  # the shipped config delegates; these tests pin each mode themselves
         (claude / "codex-approver" / "config.json").write_text(json.dumps(config))
         self.claude = claude
 
