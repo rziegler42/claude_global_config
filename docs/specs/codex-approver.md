@@ -1,6 +1,6 @@
 # Codex approver: a bounded second decision-maker for owner prompts
 
-Status: Accepted (increment 1 implemented; increments 2 and 3 pending)
+Status: Accepted (increment 1 implemented; increment 2 implemented for `claude-workflow commit` only, see ADR 0005; increment 3 pending)
 Date: 2026-10-16
 
 ## Purpose
@@ -47,7 +47,7 @@ else leaves the normal prompt to the owner.
 | Topic | Decision |
 |---|---|
 | Goal | Codex decides in the owner's place for trusted helper prompts, treating the requester as mostly untrusted |
-| Authority | Advice-only first; `allow` only after the owner approves increment 2 |
+| Authority | Advice-only first. Increment 2 (ADR 0005, 2026-10-17): `allow` for `claude-workflow commit` only, behind a code ceiling and a `delegate` list; every other rule stays advice-only |
 | Modes | Used mostly in `auto` mode, so the hook must act on `ask`-rule prompts |
 | Gate | Deterministic first, Codex second; Codex can confirm or veto, never promote |
 | Facts | The gate collects them with trusted code; the requester's text is not a source |
@@ -114,7 +114,8 @@ result is 176 valid calls, not 216. Real review prompts took 5.0 to 10.4 s.
    short timeout (15 s). Its reply must validate against a strict schema.
 7. Verdict `approve` requires every check to pass and Codex to approve.
 8. The verdict is logged and notified. In increment 1 nothing else happens.
-   In increment 2 an `approve` also returns `behavior: allow`.
+   In increment 2 an `approve` of a delegated rule (today only `claude-workflow-commit`, in `delegate` mode) also prints the
+   `behavior: allow` decision, after the verdict row is written. Any other outcome prints nothing.
 
 ### Rules
 
@@ -149,6 +150,21 @@ Initial deterministic checks:
 - Both: the command resolves, as the shell would, to the installed helper
   under an interpreter that is not inside the repository. An empty or relative
   `PATH` entry declines only when it actually holds the executable.
+
+### Delegation (increment 2, ADR 0005)
+
+`config.json` has `mode` (`advise` or `delegate`) and `delegate`, a list of rule ids. `DELEGABLE` in the hook, not the
+config, fixes which rules may ever be delegated; today that is `claude-workflow-commit` alone. `advise` requires an empty
+list and `delegate` a non-empty one; anything outside the ceiling, a duplicate, or a wrong type is a configuration error and
+the hook decides nothing. In `delegate` mode an `approve` for a listed rule logs the verdict with `decision: allow` and then
+prints the single fixed allow decision; every other result logs `decision: none` and prints nothing. `--report` counts
+delegated allows in their own section (ran, ran and failed, no outcome) and keeps them out of the agreement figure, since
+the owner judged nothing about them.
+
+`claude-workflow commit` also enforces the gate itself: it refuses a repository whose own configuration or executable hooks
+select a program for the commit to run (the same shapes `repo_config_safe` declines) unless the owner passes
+`--allow-repo-programs`, which no rule accepts, and it runs Git with replace refs ignored. The two checks are tested for
+parity.
 
 ### Advice for push and remote-runner
 
@@ -244,8 +260,9 @@ The increments below are the original delivery order. Advice for push and remote
 changing them.
 
 1. Engine, two rules, collectors, Codex call, log, notification; advice-only.
-2. `allow` for the two rules, after the owner approves it; ADR; mirrored
-   `CLAUDE.md` and `settings.json` changes.
+2. `allow` for `claude-workflow commit` only (narrowed from the original two rules by the owner, 2026-10-17); ADR 0005;
+   the helper hardening that plan 0005 required first; mirrored `CLAUDE.md` and `settings.json` changes. `remove`
+   stays advice-only until it has its own evidence and ADR.
 3. Project requests with a user-side registry that pins the project file's
    hash; classes beyond the first two; any edit drops back to no decision.
 
@@ -270,8 +287,8 @@ modules and state the Claude Code dependency in its documentation.
 6. A `deny` rule is never bypassed; adding a rule requires only a rule file and
    a fixture.
 7. The hook declares its own short timeout and returns within it.
-8. In increment 2, only the two rules can return `allow`, and the owner's
-   approval and policy change are recorded in an ADR.
+8. In increment 2, only `claude-workflow-commit` can return `allow` (the ceiling is code, the `delegate` list can only
+   choose among those), and the owner's approval and policy change are recorded in ADR 0005.
 9. The security review passes (adversarial probes of every boundary above).
 10. A live check in `auto` mode shows an `ask`-tier commit or remove prompt
     receiving a logged verdict.

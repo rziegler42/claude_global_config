@@ -805,6 +805,21 @@ EXEC_KEY = re.compile(
 TRUTHY = ("true", "yes", "on", "1")
 
 
+def git_bool_is_true(has_value, value):
+    """Read a Git boolean as Git does (same rule as bin/claude-workflow; HelperParityTests keeps them equal): a key
+    with no value is true, an integer is true unless zero, only false, no, off, 0 and the empty string are false,
+    and anything unrecognised counts as true, the cautious reading."""
+    if not has_value:
+        return True
+    text = value.strip().lower()
+    if text in ("", "false", "no", "off"):
+        return False
+    try:
+        return int(text, 0) != 0
+    except ValueError:
+        return True
+
+
 def repo_exec_findings(helper, root):
     """Names (never values) of repository settings that make the real `claude-workflow commit`
     run a repository-selected program: filter drivers, hooks, a signing or diff program."""
@@ -813,11 +828,11 @@ def repo_exec_findings(helper, root):
     if raw is None:
         return ["config:unreadable"]
     for entry in raw.decode("utf-8", "replace").split("\0"):
-        key, _, value = entry.partition("\n")
+        key, separator, value = entry.partition("\n")
         lowered = key.lower()
         if lowered in FORCED_CONFIG and value == FORCED_CONFIG[lowered]:
             continue
-        if EXEC_KEY.fullmatch(lowered) or (lowered == "commit.gpgsign" and value.strip().lower() in TRUTHY):
+        if EXEC_KEY.fullmatch(lowered) or (lowered == "commit.gpgsign" and git_bool_is_true(bool(separator), value)):
             findings.append(key)
     for directory in {helper.run(["git", "rev-parse", flag], root).stdout.strip()
                       for flag in ("--absolute-git-dir", "--git-common-dir")}:

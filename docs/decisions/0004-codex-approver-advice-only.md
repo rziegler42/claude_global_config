@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-10-16
+Amended by ADR 0005: `claude-workflow commit` alone may now be allowed; everything else here stands.
 
 ## Context
 

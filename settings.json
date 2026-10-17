@@ -137,7 +137,13 @@
       "Bash(go install:*)",
       "Bash(uv pip install:*)",
       "Bash(uv add:*)",
-      "Bash(pipx install:*)"
+      "Bash(pipx install:*)",
+      "Edit(~/.claude/codex-approver/**)",
+      "Write(~/.claude/codex-approver/**)",
+      "Edit(~/.claude/hooks/codex_approver.py)",
+      "Write(~/.claude/hooks/codex_approver.py)",
+      "Edit(~/.claude/bin/claude-workflow)",
+      "Write(~/.claude/bin/claude-workflow)"
     ],
     "deny": [
       "Read(./.env)",

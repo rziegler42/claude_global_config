@@ -268,8 +268,11 @@ CLI signed in with `codex login`; without Codex there is simply no advice.
   run, the agreement rate, and every disagreement with the reviewer's reason. Use it to judge whether the approver
   could be trusted to decide.
 - **Settings.** `codex-approver/config.json` holds the Codex model, effort and
-  timeout. `mode` accepts only `advise`; there is no switch that lets the hook
-  approve.
+  timeout. `mode` is `advise` (the shipped value) or `delegate`. In `delegate`
+  mode the `delegate` list may name only `claude-workflow-commit`, the one rule
+  the code lets the hook allow (ADR 0005); an approved verdict then runs the
+  commit without a dialog and anything else leaves the normal prompt. Set
+  `mode` back to `advise` and reinstall to revoke it.
 - **Disable** by removing the `hooks` entry from `settings.json` and reinstalling.
 - **What it does not do.** It cannot override a `deny` rule, never touches
   `git push` or anything outside its rules, and judges only the exact helper

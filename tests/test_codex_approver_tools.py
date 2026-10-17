@@ -281,6 +281,24 @@ class HelperParityTests(unittest.TestCase):
                 for key, _value in settings:
                     self.git("config", "--unset", key)
 
+    def test_commit_gpgsign_is_read_the_way_git_reads_a_boolean(self):
+        # Git treats a valueless key and any non-zero integer as true; only these spell false.
+        config = self.root / ".git" / "config"
+        base = config.read_text()
+        cases = {"[commit]\n\tgpgsign\n": True, "[commit]\n\tgpgsign = 2\n": True, "[commit]\n\tgpgsign = -1\n": True,
+                 "[commit]\n\tgpgsign = true\n": True, "[commit]\n\tgpgsign = YES\n": True,
+                 "[commit]\n\tgpgsign = on\n": True, "[commit]\n\tgpgsign = 1\n": True,
+                 "[commit]\n\tgpgsign = anything-else\n": True,
+                 "[commit]\n\tgpgsign = false\n": False, "[commit]\n\tgpgsign = no\n": False,
+                 "[commit]\n\tgpgsign = off\n": False, "[commit]\n\tgpgsign = 0\n": False,
+                 "[commit]\n\tgpgsign =\n": False, "": False}
+        for text, flagged in cases.items():
+            with self.subTest(config=text):
+                config.write_text(base + text)
+                found = self.compare()
+                self.assertEqual("commit.gpgsign" in found, flagged, found)
+        config.write_text(base)
+
     def test_the_commit_rule_never_accepts_the_owner_opt_in_flag(self):
         import json
         rule = json.loads((ROOT / "codex-approver" / "rules" / "claude-workflow-commit.json").read_text())

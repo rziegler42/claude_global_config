@@ -121,8 +121,15 @@ class SettingsWiringTests(unittest.TestCase):
 
     def test_the_hook_is_not_a_permission_rule_and_no_rule_was_relaxed(self):
         permissions = settings()["permissions"]
-        everything = json.dumps(permissions)
-        self.assertNotIn("codex_approver", everything)
+        # The hook is never a Bash permission rule; the only permission entries naming its files are the `ask`
+        # rules that make any edit of the approver's code, rules or config (including the delegate switch) prompt.
+        named = {(tier, rule) for tier in ("allow", "ask", "deny") for rule in permissions.get(tier, [])
+                 if "codex_approver" in rule or "codex-approver" in rule}
+        self.assertEqual(named, {("ask", "%s(%s)" % (tool, path)) for tool in ("Edit", "Write")
+                                 for path in ("~/.claude/codex-approver/**", "~/.claude/hooks/codex_approver.py")})
+        protected = {rule for rule in permissions["ask"] if rule.startswith(("Edit(", "Write("))}
+        self.assertEqual(protected, {"%s(%s)" % (tool, path) for tool in ("Edit", "Write") for path in (
+            "~/.claude/codex-approver/**", "~/.claude/hooks/codex_approver.py", "~/.claude/bin/claude-workflow")})
         for command in ("commit", "remove"):
             self.assertTrue(any(rule.endswith("claude-workflow %s:*)" % command) for rule in permissions["ask"]))
             self.assertFalse(any("claude-workflow %s" % command in rule for rule in permissions["allow"]))

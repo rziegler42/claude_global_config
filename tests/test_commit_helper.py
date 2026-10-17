@@ -189,6 +189,11 @@ class RepositoryPrograms(CommitFixture):
         r = self.commit("--subject", "Update a")
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_a_valueless_gpgsign_is_refused_like_git_reads_it(self):
+        config = self.root / ".git" / "config"
+        config.write_text(config.read_text() + "[commit]\n\tgpgsign\n")
+        self.assert_refused()
+
     def test_a_hook_added_after_approval_is_still_refused(self):
         # The approver judged the repository clean; the helper checks again when it actually runs.
         head = self.git("rev-parse", "HEAD")

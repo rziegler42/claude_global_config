@@ -988,6 +988,20 @@ EXEC_KEY = re.compile(
 TRUTHY = ("true", "yes", "on", "1")
 
 
+def git_bool_is_true(has_value, value):
+    """Read a Git boolean as Git does: a key with no value is true, an integer is true unless zero, and only
+    false, no, off, 0 and the empty string are false. Anything unrecognised counts as true, the cautious reading."""
+    if not has_value:
+        return True
+    text = value.strip().lower()
+    if text in ("", "false", "no", "off"):
+        return False
+    try:
+        return int(text, 0) != 0
+    except ValueError:
+        return True
+
+
 def repo_program_findings(root):
     """Names (never values) of repository-controlled settings that make a commit run a program: filter
     drivers, hooks, a signing or diff program. The owner's own global and system Git configuration is
@@ -998,9 +1012,9 @@ def repo_program_findings(root):
     if listing.returncode:
         return ["config:unreadable"]
     for entry in listing.stdout.split("\0"):
-        key, _, value = entry.partition("\n")
+        key, separator, value = entry.partition("\n")
         lowered = key.lower()
-        if EXEC_KEY.fullmatch(lowered) or (lowered == "commit.gpgsign" and value.strip().lower() in TRUTHY):
+        if EXEC_KEY.fullmatch(lowered) or (lowered == "commit.gpgsign" and git_bool_is_true(bool(separator), value)):
             findings.append(key)
     for flag in ("--absolute-git-dir", "--git-common-dir"):
         directory = run(["git", "rev-parse", flag], root).stdout.strip()
