@@ -105,10 +105,9 @@ reuse.
 
 ### 3. Create and upgrade a store (done 2026-10-18)
 
-Plan [0014](../plans/next.md) delivered this: `skills/knowledge-base-authoring/` (`SKILL.md` and
+Plan [0014](../plans/0014-knowledge-base-authoring-skill.md) delivered this: `skills/knowledge-base-authoring/` (`SKILL.md` and
 `references/create-and-upgrade.md`), mirrored in `~/.claude`, with `tests/test_knowledge_base_authoring_wiring.py`. The live check
-and two reviews changed the skill (tool-import check, checkout trust, installer output as data). The plan moves to the archive
-after the owner approves. The text below is kept as the record of the boundary.
+and two reviews changed the skill (tool-import check, checkout trust, installer output as data). The text below is kept as the record of the boundary.
 
 **Outcome:** the authoring skill (`knowledge-base-authoring`) and its create-and-upgrade
 operation, which previews and then creates a store with the starter's installer (`--dry-run` first), asks for the target path, project name, and git
