@@ -1,6 +1,6 @@
 # 0014: Knowledge-base authoring skill with create and upgrade operations
 
-Status: Approved
+Status: In Progress
 Created: 2026-10-18
 
 ## Goal
@@ -192,6 +192,10 @@ Affected areas: `tests/test_knowledge_base_authoring_wiring.py`
 3. Run it and confirm it fails for the right reason (the skill is absent).
 
 Completion: the test fails with the skill missing, and the failure names the files.
+
+Done 2026-10-18: `tests/test_knowledge_base_authoring_wiring.py` (11 tests) fails with 10 failures and 3 errors (subtests counted separately), all
+from the missing `skills/knowledge-base-authoring/SKILL.md`, its `references/create-and-upgrade.md`, and their absent
+manifest lines and README bullet; the failures name the files.
 
 ### Increment B — The skill and the reference
 
