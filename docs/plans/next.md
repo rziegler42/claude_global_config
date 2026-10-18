@@ -118,6 +118,9 @@ Affected areas: `docs/specs/knowledge-base-skills.md`, `docs/specs/README.md`
 Completion: the spec has no placeholders, each acceptance criterion names its
 candidate, and the review converged or its remaining disputes are listed.
 
+Done 2026-10-18: the spec was reviewed for four rounds (the bound extended once); every finding was
+applied, and the last round's fixes were not re-reviewed. The owner approved the spec.
+
 ### Increment C — ADR and roadmap
 
 Dependencies: Increment B

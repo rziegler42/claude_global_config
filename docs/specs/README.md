@@ -16,3 +16,9 @@ Each specification should identify its scope, non-goals, assumptions, relevant
 constraints or interfaces, acceptance criteria, and links to governing drawings,
 ADRs, or external requirements. Update it when the intended behavior changes;
 do not use it as a chronological work log.
+
+## Index
+
+| Specification | Scope |
+|---|---|
+| [knowledge-base-skills](knowledge-base-skills.md) | Personal skills that use and grow knowledge-base stores |
