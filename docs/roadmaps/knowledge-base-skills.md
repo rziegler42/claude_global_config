@@ -68,7 +68,7 @@ tool-neutral. This repository owns the skills, their tests, and their mirror in
 ### 1. Skill shape and spec (done 2026-10-18)
 
 Plan 0012 delivered this: the approved specification
-[knowledge-base-skills](../specs/knowledge-base-skills.md) and the `Proposed`
+[knowledge-base-skills](../specs/knowledge-base-skills.md) and the accepted
 [ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md). The text
 below is kept as the record of the boundary.
 
@@ -169,8 +169,7 @@ subset and asks for the audit of what shipped.
 ## Decisions
 
 Settled by the [specification](../specs/knowledge-base-skills.md) and
-[ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (2026-10-18;
-the ADR is `Proposed` until the owner accepts it):
+[ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (2026-10-18):
 
 - Two skills: `knowledge-base` (consume) and `knowledge-base-authoring` (create,
   upgrade, domain, wave, expand), the latter with one reference file per operation.
@@ -196,6 +195,6 @@ Still the owner's call per plan: whether to review each skill's plan or spec wit
 
 ## Related decisions
 
-- [ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (`Proposed`).
+- [ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (`Accepted`).
 - In other repositories: `claude_knowledge_base` ADR 0003 (standalone stores coordinated
   by the template) and its `docs/specs/domain-lifecycle.md`.

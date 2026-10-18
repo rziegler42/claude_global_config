@@ -50,4 +50,4 @@ List every ADR, including rejected and superseded records.
 | [0005](0005-codex-approver-may-allow-commits.md) | The Codex approver may allow `claude-workflow commit`, and nothing else (originally; widened by 0006) | Accepted |
 | [0006](0006-codex-approver-may-allow-archive.md) | The Codex approver may also allow `ask-codex archive` | Accepted |
 | [0007](0007-reviewer-facing-paths-in-commit-review.md) | Commit review excuses reviewer-addressed text in a fixed list of reviewer-facing files | Accepted |
-| [0008](0008-knowledge-base-skills-are-thin-wrappers.md) | Knowledge-base skills are thin wrappers that discover stores from the manifest | Proposed |
+| [0008](0008-knowledge-base-skills-are-thin-wrappers.md) | Knowledge-base skills are thin wrappers that discover stores from the manifest | Accepted |

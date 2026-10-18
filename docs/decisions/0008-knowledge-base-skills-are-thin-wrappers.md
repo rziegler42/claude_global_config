@@ -1,6 +1,6 @@
 # 0008: Knowledge-base skills are thin wrappers that discover stores from the manifest
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-18
 
 ## Context
@@ -56,8 +56,11 @@ specification is [knowledge-base-skills](../specs/knowledge-base-skills.md).
 
 ## Verification
 
-Roadmap candidates 2 to 7 deliver the specification's acceptance criteria. This ADR stays `Proposed` until the owner
-accepts it; the first skill's wiring test and the end-to-end run are the implementation evidence to record at acceptance.
+Accepted by the owner on 2026-10-18, on this evidence: the specification was reviewed for four Codex rounds and approved
+by the owner; this ADR was reviewed for two rounds, both converged with no findings; the discovery shapes were checked
+against two scratch stores registered with a scratch project (starter `6793400`, template `6d4d3e8`); the full suite
+passed. This is design acceptance only. The behavior is not yet implemented: roadmap candidates 2 to 7 deliver the
+specification's acceptance criteria, and the end-to-end run in candidate 7 is the implementation evidence.
 
 ## Related files and decisions
 
