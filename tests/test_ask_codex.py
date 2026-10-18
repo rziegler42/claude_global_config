@@ -256,6 +256,14 @@ class PlanTests(AskCodexCase):
         self.plan.write_text("# Next plan\n\nStatus: Empty — no active plan\nCreated: YYYY-MM-DD\n")
         self.expect_error("init", contains="no active plan")
 
+    def test_placeholder_title_or_created_refused(self):
+        # Two plans drafted on one day under the template heading would share an identity,
+        # and a closed review would silently block the second.
+        self.plan.write_text(PLAN.replace("Add a verbose flag", "Next plan"))
+        self.expect_error("init", contains="placeholder title")
+        self.plan.write_text(PLAN.replace("2026-10-15", "YYYY-MM-DD"))
+        self.expect_error("init", contains="placeholder Created")
+
     def test_plan_without_heading_or_created_refused(self):
         self.plan.write_text("Status: Proposed\n\nbody\n")
         self.expect_error("init", contains="heading")
