@@ -135,6 +135,9 @@ Affected areas: `docs/decisions/0008-knowledge-base-skills-are-thin-wrappers.md`
 Completion: the ADR and roadmap are consistent with the spec; the owner is asked to
 accept the ADR.
 
+Done 2026-10-18: ADR 0008 (`Proposed`) written; `review-adr` converged in round 1 with no findings;
+the roadmap records candidate 1 as done and the decisions.
+
 ## Verification
 
 `python3 -B -m unittest discover -s tests` (the suite reads no new files, so it

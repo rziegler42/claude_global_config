@@ -65,16 +65,17 @@ tool-neutral. This repository owns the skills, their tests, and their mirror in
 
 ## Ordered plan candidates
 
-### 1. Skill shape and spec
+### 1. Skill shape and spec (done 2026-10-18)
 
-**Outcome:** a specification (`docs/specs/knowledge-base-skills.md`) and an ADR
-settling the open decisions below: how many skills, their names and trigger
-descriptions, how a skill finds the starter checkout and a store, and the rule
-that a skill is a thin wrapper that reads the store's own `docs/kb/` and
-`AGENTS.md` first. It also states what each skill may run without asking, what
-needs the owner (creating a directory, an identity, registering with the
-template, quarantine release, commits), and the acceptance criteria for later
-candidates.
+Plan 0012 delivered this: the approved specification
+[knowledge-base-skills](../specs/knowledge-base-skills.md) and the `Proposed`
+[ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md). The text
+below is kept as the record of the boundary.
+
+**Outcome:** a specification and an ADR settling how many skills there are, their
+names and trigger descriptions, how a skill finds the starter checkout and a store,
+and the thin-wrapper rule. It also states what each skill may run without asking, what
+needs the owner, and the acceptance criteria for later candidates.
 **Dependencies:** owner review of this roadmap.
 **Boundary:** documents only. No skill file, no settings change.
 **Promotion trigger:** the owner accepts this roadmap and asks to proceed.
@@ -99,8 +100,8 @@ reuse.
 
 ### 3. Create and upgrade a store
 
-**Outcome:** a skill that previews and then creates a store with the starter's
-installer (`--dry-run` first), asks for the target path, project name, and git
+**Outcome:** the authoring skill (`knowledge-base-authoring`) and its create-and-upgrade
+operation, which previews and then creates a store with the starter's installer (`--dry-run` first), asks for the target path, project name, and git
 identity, runs the check and status report, and relays the registration hint. It
 also previews and runs `--upgrade` on an existing store and reports the skipped
 files.
@@ -113,7 +114,7 @@ stores through Claude.
 
 ### 4. Create a domain and set its charter
 
-**Outcome:** a skill for operation 1 of the lifecycle: run `new_domain.py`,
+**Outcome:** an authoring-skill operation for operation 1 of the lifecycle: run `new_domain.py`,
 draft the charter sections and at least three decision-shaped questions for the
 owner to approve, and run `check_kb.py` until it passes with `charter: set`. The
 charter is the owner's decision; the skill proposes and the owner confirms before
@@ -124,7 +125,7 @@ charter is the owner's decision; the skill proposes and the owner confirms befor
 
 ### 5. Run a content wave
 
-**Outcome:** a skill for operation 2: open a wave in the log with a goal, target
+**Outcome:** an authoring-skill operation for operation 2: open a wave in the log with a goal, target
 questions, and a source limit; record leads and sources; run `add_source.py`, the
 converter, and the scan; stop for any flagged source until the owner releases it;
 write reading notes and entries with claim tags; verify against saved sources;
@@ -141,14 +142,14 @@ security review.
 
 ### 6. Expand a domain from its status report
 
-**Outcome:** a skill for operation 3: run `kb_status.py`, run a usage test
+**Outcome:** an authoring-skill operation for operation 3: run `kb_status.py`, run a usage test
 against the router, choose gaps in the spec's priority order unless the owner
 says otherwise, and hand the chosen gaps to candidate 5's wave with the opening
 `Gaps:` line and the closing `Gap result:` line.
 **Dependencies:** candidate 5.
 **Boundary:** it reuses the wave procedure; it does not duplicate it.
-**Promotion trigger:** candidate 5 is complete. Candidates 5 and 6 may merge into
-one skill if candidate 1 decides on a single skill with modes.
+**Promotion trigger:** candidate 5 is complete. Candidates 5 and 6 may share one plan,
+since both are operations of the same authoring skill.
 
 ### 7. End-to-end audit
 
@@ -165,24 +166,25 @@ converts, or registers stays prompted), so this candidate adds none of its own.
 **Promotion trigger:** candidates 2 to 6 are complete, or the owner stops after a
 subset and asks for the audit of what shipped.
 
-## Open decisions
+## Decisions
 
-- One skill with modes, or one per operation? Five small skills have precise
-  trigger descriptions; one skill is a single place to maintain. Leaning: a
-  `knowledge-base` skill for consuming (candidate 2, used in other projects) and a
-  separate authoring skill for candidates 3 to 6 (used inside a store), because
-  their audiences, risk, and trigger conditions differ.
-- How a skill finds the starter checkout (needed only to create or upgrade a
-  store). Finding existing stores is settled: read `module_info` in the
-  project's `.template-manifest` and list every `type: knowledge-base` entry by
-  module name; inside a store, `kb.json` marks the root. The checkout path is not recorded
-  anywhere known; options are to ask the owner or use an environment variable. A
-  path never goes into the mirrored files.
-- Whether the procedure text may be summarized in a skill at all, or only linked
-  to the store's `docs/kb/`. Leaning: link, with the safety rules restated because
-  they must be seen even if the document is not read.
-- Whether to review each skill's plan or spec with `second-opinion` (the roadmap
-  and spec kinds exist); that is an owner call per plan.
+Settled by the [specification](../specs/knowledge-base-skills.md) and
+[ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (2026-10-18;
+the ADR is `Proposed` until the owner accepts it):
+
+- Two skills: `knowledge-base` (consume) and `knowledge-base-authoring` (create,
+  upgrade, domain, wave, expand), the latter with one reference file per operation.
+  Candidates 3 to 6 therefore each add an operation to the authoring skill, not a
+  new skill.
+- Stores are found from `module_info` in `.template-manifest` (every
+  `type: knowledge-base` entry, by module name) or `kb.json` inside a store; an
+  owner-named path overrides. The starter checkout is asked for and verified, never
+  read from the environment or a mirrored file.
+- Skills link the store's own procedure instead of copying it, restate the safety
+  rules, and run only the tools and flags the specification lists.
+
+Still the owner's call per plan: whether to review each skill's plan or spec with
+`second-opinion`.
 
 ## Deferred
 
@@ -194,6 +196,6 @@ subset and asks for the audit of what shipped.
 
 ## Related decisions
 
-None yet. Candidate 1 records the first. Related, in other repositories:
-`claude_knowledge_base` ADR 0003 (standalone stores coordinated by the template)
-and its `docs/specs/domain-lifecycle.md`.
+- [ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (`Proposed`).
+- In other repositories: `claude_knowledge_base` ADR 0003 (standalone stores coordinated
+  by the template) and its `docs/specs/domain-lifecycle.md`.
