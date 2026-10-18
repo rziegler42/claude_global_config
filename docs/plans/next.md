@@ -108,6 +108,9 @@ Affected areas: `skills/knowledge-base/SKILL.md`, `config-manifest.txt`, `README
 
 Completion: the wiring test passes and the install check is clean.
 
+Done 2026-10-18: `skills/knowledge-base/SKILL.md` written, manifest line and README bullet added; the wiring
+test passes (9 tests); `python3 install.py` synced `~/.claude` and `install.py --check` reports no drift.
+
 ### Increment C — Live check
 
 Dependencies: Increment B; decision point 1

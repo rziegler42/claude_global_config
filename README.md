@@ -23,8 +23,10 @@ downloads, synced skills, or other generated and machine-specific state.
   `verdict.schema.json`, and `rules/`) — the advice-only Codex approver for
   `claude-workflow commit` and `remove` prompts (see Codex approver).
 - `skills/` — architecture-decision, FreeCAD scripting (FreeCAD 1.1), Graphify
-  workflow, security-review, and Verilog formal-verification (SymbiYosys) and
-  simulation (Verilator) skills maintained with this configuration.
+  workflow, knowledge-base (read-only use of knowledge-base stores; see
+  `docs/roadmaps/knowledge-base-skills.md`), security-review, and Verilog
+  formal-verification (SymbiYosys) and simulation (Verilator) skills maintained with
+  this configuration.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git and Graphify operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
