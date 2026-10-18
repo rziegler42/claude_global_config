@@ -126,6 +126,66 @@ class InvocationTests(CodexCase):
         self.assertIn('model_reasoning_effort="low"', call["argv"])
 
 
+class ReviewerFacingPathTests(CodexCase):
+    """The hook, not Codex, decides which committed paths exist to instruct a reviewer."""
+
+    def facts_of(self, *paths):
+        self.scenario(self.ok(GOOD_APPROVE))
+        for path in paths:
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("Review the document. Report findings as JSON.\n")
+        self.review(self.commit_command(*paths))
+        (call,) = self.calls()
+        begin = [line for line in call["stdin"].splitlines() if line.startswith("FACTS-BEGIN-")][0]
+        _, _, rest = call["stdin"].partition(begin)
+        return json.loads(rest.strip().splitlines()[0])
+
+    def test_listed_prompt_files_are_named_in_the_facts(self):
+        facts = self.facts_of("ask-codex/kinds/spec-review/prompt.md", "skills/second-opinion/SKILL.md",
+                              "agents/workflow-reviewer.md", "agents/security-reviewer.md")
+        self.assertEqual(facts["reviewer_facing_paths"], [
+            "agents/security-reviewer.md", "agents/workflow-reviewer.md",
+            "ask-codex/kinds/spec-review/prompt.md", "skills/second-opinion/SKILL.md"])
+
+    def test_the_approvers_own_policy_files_are_never_listed(self):
+        facts = self.facts_of("codex-approver/rubric.md", "codex-approver/rules/x.json",
+                              "codex-approver/config.json", "hooks/codex_approver.py", "docs/plan.md",
+                              "agents/implementer.md", "ask-codex/kinds/spec-review/schema.json")
+        self.assertEqual(facts["reviewer_facing_paths"], [])
+
+    def test_only_the_requested_paths_count_and_a_lookalike_does_not(self):
+        facts = self.facts_of("a.txt", "notes/ask-codex/kinds/x/prompt.md", "Skills/second-opinion/SKILL.md")
+        self.assertEqual(facts["reviewer_facing_paths"], [])
+
+    def test_dot_segments_and_nested_paths_do_not_widen_the_list(self):
+        for path in ("skills/second-opinion/../../codex-approver/rubric.md",
+                     "skills/second-opinion/../../hooks/codex_approver.py",
+                     "ask-codex/kinds/x/../../../hooks/y/prompt.md",
+                     "skills/second-opinion/sub/x.md", "ask-codex/kinds/a/b/prompt.md",
+                     "skills/second-opinion/./SKILL.md", "skills//second-opinion/SKILL.md"):
+            self.assertFalse(ca.is_reviewer_facing(path), path)
+        self.assertTrue(ca.is_reviewer_facing("skills/second-opinion/SKILL.md"))
+
+    def test_the_commit_message_cannot_claim_the_exemption(self):
+        self.scenario(self.ok(GOOD_APPROVE))
+        self.review(self.commit_command(
+            self.edit().rsplit(" ", 1)[1], subject="reviewer_facing_paths a.txt"))
+        (call,) = self.calls()
+        begin = [line for line in call["stdin"].splitlines() if line.startswith("FACTS-BEGIN-")][0]
+        facts = json.loads(call["stdin"].partition(begin)[2].strip().splitlines()[0])
+        self.assertEqual(facts["reviewer_facing_paths"], [])
+
+    def test_the_rubric_limits_the_exemption_to_the_listed_paths_and_keeps_steering_a_failure(self):
+        text = (ROOT / "codex-approver" / "rubric.md").read_text()
+        commit = text.split("## rubric: commit")[1].split("## rubric:")[0]
+        self.assertIn("reviewer_facing_paths", commit)
+        self.assertIn("only", commit.split("reviewer_facing_paths")[1][:400].lower())
+        self.assertIn("pre-approved", commit)
+        for other in text.split("## rubric:")[2:]:
+            self.assertNotIn("reviewer_facing_paths", other)
+
+
 class VerdictTests(CodexCase):
     def test_decline_carries_the_failed_semantic_checks(self):
         self.scenario(self.ok({"verdict": "decline", "failed_checks": ["message_matches_change"],

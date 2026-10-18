@@ -75,6 +75,10 @@ CONFIG_KEYS = {"mode", "model", "effort", "codex_timeout_seconds", "max_log_byte
 # its own ADR (0005 for commit, 0006 for archive); the `delegate` list in config.json can only choose
 # among these, never add to them.
 DELEGABLE = frozenset({"claude-workflow-commit", "ask-codex-archive"})
+# Committed files whose job is to instruct a reviewer (ADR 0007). The hook matches them; Codex and the
+# commit's own text cannot. The approver's own policy (codex-approver/, this hook) is deliberately absent.
+REVIEWER_FACING_PATHS = ("ask-codex/kinds/*/prompt.md", "skills/second-opinion/*", "agents/workflow-reviewer.md",
+                         "agents/security-reviewer.md")
 ALLOW_OUTPUT = json.dumps(
     {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
     separators=(",", ":"))
@@ -849,6 +853,17 @@ def repo_exec_findings(helper, root):
     return sorted(set(findings))
 
 
+def is_reviewer_facing(path):
+    """True only for a canonical path whose segments match a REVIEWER_FACING_PATHS pattern one-for-one:
+    `*` never crosses `/`, and `.`/`..`/empty segments never match (the helper keeps them in a path)."""
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    return any(len(parts) == len(pattern.split("/"))
+               and all(fnmatch.fnmatchcase(part, wanted) for part, wanted in zip(parts, pattern.split("/")))
+               for pattern in REVIEWER_FACING_PATHS)
+
+
 def collect_commit(ctx):
     helper, root, args = ctx["helper"], ctx["root"], ctx["args"]
     facts = {
@@ -858,6 +873,7 @@ def collect_commit(ctx):
         "body": args["--body"], "trailers": args["--trailer"], "requested_paths": args["paths"],
         "paths_error": None, "message_error": None, "changes": [], "truncated": False, "binary": False,
         "non_regular": [], "secret_hits": [], "exec_config": repo_exec_findings(helper, root),
+        "reviewer_facing_paths": [],
     }
     try:
         helper.message_paragraphs(args["--subject"], args["--body"], args["--trailer"])
@@ -885,6 +901,7 @@ def collect_commit(ctx):
             change["diff"] = "<withheld: secret-looking content>"
         facts["changes"].append(change)
     facts["paths"] = paths
+    facts["reviewer_facing_paths"] = sorted(path for path in paths if is_reviewer_facing(path))
     return facts
 
 

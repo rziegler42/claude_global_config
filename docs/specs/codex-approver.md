@@ -212,6 +212,9 @@ otherwise answers `decline` naming the failed check IDs. The reply is strict
 JSON. The exact wording is part of the plan and is tested against hostile
 fixtures.
 
+Commit facts carry `reviewer_facing_paths`, the requested paths matching a fixed list in the hook (ADR 0007). Only
+for those paths does the commit rubric excuse text that instructs a reviewer; steering this review still fails.
+
 ### Failure behavior
 
 Any error, timeout, Codex outage, schema violation or unexpected input yields
