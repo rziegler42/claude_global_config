@@ -200,12 +200,12 @@ allowed to run, such as a repository's tests, is not confined. Anything it does
 not recognize is denied. The hooks resolve the script through
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
 
-## Second opinion (Codex review of plans, specs, and roadmaps)
+## Second opinion (Codex review of plans, specs, roadmaps, and ADRs)
 
 Claude Code can ask Codex to review `docs/plans/next.md`, a spec in
-`docs/specs/`, or a roadmap in `docs/roadmaps/` using your ChatGPT subscription
+`docs/specs/`, a roadmap in `docs/roadmaps/`, or an ADR in `docs/decisions/` using your ChatGPT subscription
 (no API key). It is on demand only: ask Claude to "have Codex review the plan"
-(or "the spec", "the roadmap"), or invoke `/second-opinion`. A spec or roadmap
+(or "the spec", "the roadmap", "the ADR"), or invoke `/second-opinion`. A spec, roadmap or ADR
 can be reviewed at any status; after you archive its review, a later review
 starts fresh. The `second-opinion` skill runs
 the `ask-codex` helper, which is read-only and round-limited:
@@ -223,7 +223,7 @@ the `ask-codex` helper, which is read-only and round-limited:
   what Codex currently offers.
 - `extend`, `reset`, `archive`, and `prune` need your approval; Claude Code
   prompts for each.
-- Review state lives in untracked `.debug/<date>-<plan|spec|roadmap>-review/`. Run
+- Review state lives in untracked `.debug/<date>-<plan|spec|roadmap|adr>-review/`. Run
   `ask-codex archive` when closing a plan, paste its summary into the archived
   plan, and `ask-codex prune` (preview, then `--confirm`) removes closed
   reviews after 14 days.

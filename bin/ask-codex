@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded, read-only Codex review helper for plans, specs, and roadmaps.
+"""Bounded, read-only Codex review helper for plans, specs, roadmaps, and ADRs.
 
 Specifications: docs/specs/second-opinion-plan-review.md and
 docs/specs/second-opinion-document-review.md
@@ -11,9 +11,10 @@ Commands:
   review-plan                       run one bounded plan review round
   review-spec --spec PATH           run one bounded spec review round
   review-roadmap --roadmap PATH     run one bounded roadmap review round
+  review-adr --adr PATH             run one bounded ADR review round
   decide ID applied|rejected        record a decision on a finding
 
-The per-document commands take --plan (default), --spec, or --roadmap.
+The per-document commands take --plan (default), --spec, --roadmap, or --adr.
 
 All output is one JSON object on stdout:
   {"status": "ok" | "stopped" | "error", ...}
@@ -53,11 +54,12 @@ DOC_KINDS = {
     "plan-review": {"flag": "plan", "label": "plan", "directory": None},
     "spec-review": {"flag": "spec", "label": "spec", "directory": "docs/specs"},
     "roadmap-review": {"flag": "roadmap", "label": "roadmap", "directory": "docs/roadmaps"},
+    "adr-review": {"flag": "adr", "label": "ADR", "directory": "docs/decisions"},
 }
 STATE_SCHEMA = 1
 MAX_PLAN_BYTES = 2 * 1024 * 1024
 MAX_REASON = 2000
-STATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}-(plan|spec|roadmap)-review(-\d+)?", re.ASCII)
+STATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}-(plan|spec|roadmap|adr)-review(-\d+)?", re.ASCII)
 FINDING_RE = re.compile(r"R(\d+)-F(\d+)", re.ASCII)
 ENV_PASS = ("PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
 ERROR_LINE = re.compile(r"^ERROR:\s*(\{.*\})\s*$")
@@ -738,12 +740,17 @@ def state_label(state):
     return DOC_KINDS.get(state.get("kind"), DOC_KINDS[KIND])["label"]
 
 
+def title_case(label):
+    """Capitalize the first letter only, so the label ADR stays ADR."""
+    return label[:1].upper() + label[1:]
+
+
 def render_ledger(directory, state):
     lines = [
         "# Review ledger",
         "",
-        "%s: %s" % (state_label(state).capitalize(), clean(state.get("plan", ""))),
-        "%s key: %s" % (state_label(state).capitalize(), state["plan_key"]),
+        "%s: %s" % (title_case(state_label(state)), clean(state.get("plan", ""))),
+        "%s key: %s" % (title_case(state_label(state)), state["plan_key"]),
         "Model: %s, effort: %s" % (clean(state["model"]), clean(state["effort"])),
         "Rounds used: %d of %d" % (state["rounds_used"], state["bound"]),
         "",
@@ -1148,6 +1155,10 @@ def command_review_roadmap(args):
     return command_review(args)
 
 
+def command_review_adr(args):
+    return command_review(args)
+
+
 def command_review(args):
     config, kind, root, plan = context(args)
 
@@ -1467,7 +1478,7 @@ def command_reset(args):
 def archive_summary(directory, state):
     label = state_label(state)
     lines = ["## Codex %s review" % label, "",
-             "- %s: %s (key %s)" % (label.capitalize(), clean(state.get("plan", "")), state["plan_key"]),
+             "- %s: %s (key %s)" % (title_case(label), clean(state.get("plan", "")), state["plan_key"]),
              "- Rounds used: %d of %d" % (state["rounds_used"], state["bound"])]
     last_meaningful = None
     for number in range(1, state["rounds_used"] + 1):
@@ -1600,11 +1611,12 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
 
     def add_plan(p):
-        """The document a per-document command addresses: a plan (default), spec, or roadmap."""
+        """The document a per-document command addresses: a plan (default), spec, roadmap, or ADR."""
         group = p.add_mutually_exclusive_group()
         group.add_argument("--plan", help="plan file (default: %s); relative paths are repository-relative" % DEFAULT_PLAN)
         group.add_argument("--spec", help="spec file directly in docs/specs/")
         group.add_argument("--roadmap", help="roadmap file directly in docs/roadmaps/")
+        group.add_argument("--adr", help="ADR file directly in docs/decisions/")
 
     def add_review_options(p):
         p.add_argument("--max-rounds", type=int, help="bound for this review; only when it starts")
@@ -1631,6 +1643,10 @@ def build_parser():
     p.add_argument("--roadmap", required=True, help="roadmap file directly in docs/roadmaps/")
     add_review_options(p)
     p.set_defaults(func=command_review_roadmap, doc_kind="roadmap-review")
+    p = sub.add_parser("review-adr", help="run one bounded ADR review round")
+    p.add_argument("--adr", required=True, help="ADR file directly in docs/decisions/")
+    add_review_options(p)
+    p.set_defaults(func=command_review_adr, doc_kind="adr-review")
     p = sub.add_parser("extend", help="grant 1-5 more rounds (owner approval)")
     add_plan(p)
     p.add_argument("rounds", type=int, help="rounds to add, 1 to %d" % HARD_ROUND_CEILING)

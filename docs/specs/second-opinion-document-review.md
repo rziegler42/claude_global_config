@@ -30,7 +30,8 @@ are built on them.
 ## Non-goals
 
 - Automatic triggers. Reviews run only when the owner asks.
-- Reviewing ADRs, diffs, code, or free-form questions.
+- Reviewing diffs, code, or free-form questions. (ADRs were a non-goal here and
+  are added by plan 0011; see "ADR review" below.)
 - Codex writing any file. Claude edits only the document under review.
 - Any change to plan review behavior, its gates, or its state.
 - Judging whether a roadmap or spec is *approved*; review never changes a
@@ -177,3 +178,20 @@ the precise approver-rule edits, provided the decisions above hold.
 
 `second-opinion-plan-review.md`; ADR 0001; `claude_project_template`
 `docs/specs/README.md` and `docs/roadmaps/README.md`.
+
+## ADR review (plan 0011)
+
+An ADR in `docs/decisions/` is reviewed like a spec or roadmap: the
+`adr-review` kind (`ask-codex/kinds/adr-review/`), `review-adr --adr PATH`, and
+`--adr` on `status`, `init`, `decide`, `extend`, `reset` and `archive`. The path
+must be a `.md` file directly in `docs/decisions/`, not `README.md`; the same
+in-repository, non-link, regular-file and size checks apply. An ADR has no
+`Created:` line, so its key is its repository-relative path, and a closed
+review never blocks a fresh one. State lives in
+`.debug/<date>-adr-review[-N]/`. The prompt asks the reviewer to judge that the
+ADR states context, decision, alternatives and consequences, that its claims
+about the repository are true, and that it does not contradict an earlier ADR
+it does not supersede; it does not ask whether the decision is the right one
+beyond its consistency and cited evidence. The approver's `ask-codex-archive`
+rule accepts `--adr` as a value flag like the other document flags; nothing
+else about the approver changed.

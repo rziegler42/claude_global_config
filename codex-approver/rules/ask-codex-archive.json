@@ -12,7 +12,8 @@
   "flags": {
     "--plan": "value",
     "--spec": "value",
-    "--roadmap": "value"
+    "--roadmap": "value",
+    "--adr": "value"
   },
   "positionals": "none",
   "review_checks": [

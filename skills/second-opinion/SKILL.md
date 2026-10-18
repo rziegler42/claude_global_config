@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Use when the owner asks Codex (ChatGPT) to review or give a second opinion on the implementation plan in docs/plans/next.md, on a spec in docs/specs/, or on a roadmap in docs/roadmaps/, or to run the bounded Claude-and-Codex review loop. Drives the read-only, round-limited `ask-codex` helper and applies or rejects each finding itself.
+description: Use when the owner asks Codex (ChatGPT) to review or give a second opinion on the implementation plan in docs/plans/next.md, on a spec in docs/specs/, or on a roadmap in docs/roadmaps/, on an ADR in docs/decisions/, or to run the bounded Claude-and-Codex review loop. Drives the read-only, round-limited `ask-codex` helper and applies or rejects each finding itself.
 ---
 
 # Second opinion: bounded Codex review
@@ -10,8 +10,8 @@ ChatGPT subscription through the `ask-codex` helper. Codex is **read-only**: it
 returns findings and you are the only writer. The helper owns the round counter
 and the bound; you cannot raise it.
 
-Reviews cover three document types, and only on request. Do not start a review
-on your own, and do not use this skill for diffs, code, ADRs, or free-form
+Reviews cover four document types, and only on request. Do not start a review
+on your own, and do not use this skill for diffs, code, or free-form
 questions.
 
 | Document | Command | Path |
@@ -19,20 +19,21 @@ questions.
 | Implementation plan | `ask-codex review-plan` | `docs/plans/next.md` (`--plan PATH` for another plan file) |
 | Specification | `ask-codex review-spec --spec PATH` | a `.md` file directly in `docs/specs/` |
 | Roadmap | `ask-codex review-roadmap --roadmap PATH` | a `.md` file directly in `docs/roadmaps/` |
+| ADR | `ask-codex review-adr --adr PATH` | a `.md` file directly in `docs/decisions/` |
 
-A spec or roadmap path is always named by the owner; there is no default, and
+A spec, roadmap or ADR path is always named by the owner; there is no default, and
 `README.md` and `archive/` are refused. Every other command that addresses a
 review (`status`, `init`, `decide`, `extend`, `reset`, `archive`) takes the same
-`--plan`, `--spec`, or `--roadmap` flag, and only one of them. Below, "the
-document" is the plan, spec, or roadmap under review, and `<flag>` is its flag.
+`--plan`, `--spec`, `--roadmap`, or `--adr` flag, and only one of them. Below, "the
+document" is the plan, spec, roadmap, or ADR under review, and `<flag>` is its flag.
 
 ## Before you start
 
 1. For a plan, confirm it exists and is `Status: Proposed` (`docs/plans/next.md`
-   unless the owner names another path). A spec or roadmap has no status gate:
+   unless the owner names another path). A spec, roadmap or ADR has no status gate:
    it is reviewable whenever the owner asks, at any status. Review never
    changes a document's status.
-2. Run `ask-codex status` (with `<flag> PATH` for a spec or roadmap). Read `rounds_used`, `bound`, `model`, `effort`,
+2. Run `ask-codex status` (with `<flag> PATH` for a spec, roadmap or ADR). Read `rounds_used`, `bound`, `model`, `effort`,
    `closed`, `blocked`, and `pending_decisions`. Stop and tell the owner if the
    review is closed or blocked.
 3. If the owner asked for a number of rounds ("up to 4 rounds"), pass
@@ -72,14 +73,14 @@ You may only edit the document under review. Do not edit source, tests, configur
 any other document during the loop. Never edit files under `.debug/`: the
 helper seals its own state and an edited state is rejected. Do not change the
 document's `Status`: a plan stays `Proposed` unless the owner approves it, and
-a spec or roadmap keeps the status it has. Never put credentials or secrets in
+a spec, roadmap or ADR keeps the status it has. Never put credentials or secrets in
 the document.
 
 ## Stop conditions
 
 | Result | What you do |
 |---|---|
-| `outcome: converged` | Stop. Report rounds used and a short summary. A plan stays `Proposed`; wait for the owner to say "implement". A spec or roadmap is not approved by review. |
+| `outcome: converged` | Stop. Report rounds used and a short summary. A plan stays `Proposed`; wait for the owner to say "implement". A spec, roadmap or ADR is not approved by review. |
 | `status: stopped`, `bound_reached` | Stop. Report what is still disputed (`pending_decisions`, `rejected`) and ask the owner whether to extend. |
 | `status: stopped`, `reraise_escalation` | Stop. Show the owner both positions: Codex's finding with its new evidence, and your rejection reason. The owner decides. |
 | `status: stopped`, `failure_cap` | Stop. Report the error; do not loop. |
@@ -94,15 +95,15 @@ when present.
 permission prompt, and you must never run them unless the owner explicitly asked
 for that action in this conversation. If a loop is stopped at its bound,
 **ask**; do not extend on your own. `archive` closes the review, so running it
-is also how a new review of the same spec or roadmap could begin (a closed plan
+is also how a new review of the same spec, roadmap or ADR could begin (a closed plan
 review stays closed). Never run `archive` to get around a bound: run it only
-when the owner asks to close the review. After the owner archives a spec or
-roadmap review, the next `review-spec` or `review-roadmap` starts a fresh review
-with a fresh default bound; extra rounds still come only from `extend` or
-`reset`. Renaming or moving a spec or roadmap leaves its open review orphaned
+when the owner asks to close the review. After the owner archives a spec,
+roadmap or ADR review, the next `review-spec`, `review-roadmap` or
+`review-adr` starts a fresh review with a fresh default bound; extra rounds still come only from `extend` or
+`reset`. Renaming or moving a spec, roadmap or ADR leaves its open review orphaned
 (`status` lists it under `orphaned_reviews`); tell the owner, who decides
 whether to archive it. The owner closes it by naming its old path:
-`ask-codex archive <flag> <old path>`. For a spec or roadmap, `archive` prints
+`ask-codex archive <flag> <old path>`. For a spec, roadmap or ADR, `archive` prints
 its summary once (a closed review cannot be archived again), so capture it.
 
 ## When the owner authorizes implementation
@@ -124,7 +125,7 @@ old reviews is a separate owner request.
 
 State: rounds used of the bound, model and effort, outcome, findings applied
 and rejected (with reasons), items for the owner, and tokens used. Keep it
-short; the ledger is in `.debug/<date>-<plan|spec|roadmap>-review/ledger.md`.
+short; the ledger is in `.debug/<date>-<plan|spec|roadmap|adr>-review/ledger.md`.
 
 ## What Codex can see
 

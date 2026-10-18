@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 GATED = ("extend", "reset", "prune", "archive")
-OPEN = ("review-plan", "review-spec", "review-roadmap", "decide", "status", "models", "init")
+OPEN = ("review-plan", "review-spec", "review-roadmap", "review-adr", "decide", "status", "models", "init")
 SPELLINGS = (
     "ask-codex {cmd}",
     "~/.claude/bin/ask-codex {cmd}",
@@ -31,6 +31,9 @@ MANIFEST_PATHS = (
     "ask-codex/kinds/roadmap-review/kind.json",
     "ask-codex/kinds/roadmap-review/prompt.md",
     "ask-codex/kinds/roadmap-review/schema.json",
+    "ask-codex/kinds/adr-review/kind.json",
+    "ask-codex/kinds/adr-review/prompt.md",
+    "ask-codex/kinds/adr-review/schema.json",
     "skills/second-opinion/SKILL.md",
 )
 # What each document kind's prompt must ask the reviewer to judge.
@@ -39,6 +42,8 @@ KIND_CRITERIA = {
                     "implementation sequencing", "work log"),
     "roadmap-review": ("promotion trigger", "dependencies", "plan-boundary", "file lists",
                        "authoriz", "adr", "status"),
+    "adr-review": ("alternatives", "consequences", "supersede", "contradict", "context",
+                   "authorization"),
 }
 
 
@@ -139,7 +144,8 @@ class Skill(unittest.TestCase):
         head = self.text.split("---", 2)[1].lower()
         for phrase in ("spec", "roadmap"):
             self.assertIn(phrase, head)
-        for phrase in ("review-spec", "review-roadmap", "--spec", "--roadmap",
+        self.assertIn("adr", head)
+        for phrase in ("review-spec", "review-roadmap", "review-adr", "--spec", "--roadmap", "--adr",
                        "any status", "no status gate",
                        "only edit the document under review",
                        "never run `archive` to get around a bound",

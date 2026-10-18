@@ -91,10 +91,16 @@ class DocumentFlagGrammarTests(unittest.TestCase):
         self.assertEqual((rule["id"], args["--spec"]), ("ask-codex-archive", "docs/specs/widget.md"))
         rule, args = self.match("ask-codex archive --roadmap docs/roadmaps/widgets.md")
         self.assertEqual((rule["id"], args["--roadmap"]), ("ask-codex-archive", "docs/roadmaps/widgets.md"))
+        rule, args = self.match("ask-codex archive --adr docs/decisions/0001-widget.md")
+        self.assertEqual((rule["id"], args["--adr"]), ("ask-codex-archive", "docs/decisions/0001-widget.md"))
 
     def test_malformed_document_flags_do_not_match(self):
         for bad in ("ask-codex archive --spec", "ask-codex archive --roadmap",
                     "ask-codex archive --spec a --spec b", "ask-codex archive --roadmap a --roadmap b",
+                    "ask-codex archive --adr", "ask-codex archive --adr a --adr b",
+                    "ask-codex archive --adr=docs/decisions/0001-widget.md", "ask-codex archive --adr --help",
+                    "ask-codex archive --bogus docs/decisions/0001-widget.md",
+                    "ask-codex review-adr --adr docs/decisions/0001-widget.md",
                     "ask-codex archive --spec=docs/specs/widget.md", "ask-codex archive --spec -h",
                     "ask-codex archive --roadmap --help", "ask-codex archive --spec a extra",
                     "ask-codex review-spec --spec docs/specs/widget.md"):
@@ -106,13 +112,15 @@ class ArchiveFactsTests(ArchiveCase):
     def add_documents(self):
         for directory, name, text in (
                 ("specs", "widget.md", "# Widget requirements\n\nStatus: Accepted\n"),
-                ("roadmaps", "widgets.md", "# Roadmap: widgets\n\nStatus: Active\n")):
+                ("roadmaps", "widgets.md", "# Roadmap: widgets\n\nStatus: Active\n"),
+                ("decisions", "0001-widget.md", "# 0001: Widgets\n\nStatus: Accepted\n")):
             (self.repo / "docs" / directory).mkdir(parents=True, exist_ok=True)
             (self.repo / "docs" / directory / name).write_text(text)
 
     def test_a_spec_or_roadmap_review_is_described_by_its_own_status(self):
         self.add_documents()
-        for flag, path in (("--spec", "docs/specs/widget.md"), ("--roadmap", "docs/roadmaps/widgets.md")):
+        for flag, path in (("--spec", "docs/specs/widget.md"), ("--roadmap", "docs/roadmaps/widgets.md"),
+                           ("--adr", "docs/decisions/0001-widget.md")):
             with self.subTest(flag=flag):
                 self.assertFalse(self.facts("ask-codex archive %s %s" % (flag, path))["state_found"])
                 self.ask_codex("init", flag, path)
@@ -134,13 +142,15 @@ class ArchiveFactsTests(ArchiveCase):
         with mock.patch.object(ca.subprocess, "Popen", recording):
             self.analyze("ask-codex archive --spec docs/specs/widget.md")
             self.analyze("ask-codex archive --roadmap docs/roadmaps/widgets.md")
+            self.analyze("ask-codex archive --adr docs/decisions/0001-widget.md")
         forwarded = [argv[-2:] for argv in seen if "status" in argv]
         self.assertEqual(forwarded, [["status", "--spec=docs/specs/widget.md"],
-                                     ["status", "--roadmap=docs/roadmaps/widgets.md"]])
+                                     ["status", "--roadmap=docs/roadmaps/widgets.md"],
+                                     ["status", "--adr=docs/decisions/0001-widget.md"]])
 
     def test_an_empty_document_flag_fails_closed_instead_of_checking_the_plan(self):
         self.ask_codex("init")
-        for flag in ("--spec", "--roadmap"):
+        for flag in ("--spec", "--roadmap", "--adr"):
             with self.subTest(flag=flag):
                 result = self.analyze("ask-codex archive %s ''" % flag)
                 self.assertEqual(result["failed"], ["status_ok"], result)
@@ -154,7 +164,7 @@ class ArchiveFactsTests(ArchiveCase):
 
     def test_a_secret_pattern_in_a_document_argument_is_withheld(self):
         token = "ghp_" + "e" * 36
-        for flag, directory in (("--spec", "specs"), ("--roadmap", "roadmaps")):
+        for flag, directory in (("--spec", "specs"), ("--roadmap", "roadmaps"), ("--adr", "decisions")):
             with self.subTest(flag=flag):
                 result = self.analyze("ask-codex archive %s docs/%s/%s.md" % (flag, directory, token))
                 self.assertIn("no_secret_lines", result["failed"])

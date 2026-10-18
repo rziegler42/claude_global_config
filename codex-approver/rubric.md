@@ -180,11 +180,11 @@ Semantic checks:
 
 ## rubric: ask-codex-archive
 
-The command closes the Codex review for one document: a plan (`--plan`, the default), a spec (`--spec`), or a
-roadmap (`--roadmap`). FACTS names the flag (`document_flag`) and the path given (`plan_argument`). Afterwards no
+The command closes the Codex review for one document: a plan (`--plan`, the default), a spec (`--spec`), a
+roadmap (`--roadmap`), or an ADR (`--adr`). FACTS names the flag (`document_flag`) and the path given (`plan_argument`). Afterwards no
 further round runs in that review, and a closed review cannot be reopened. A closed plan review stays closed. A
-spec or roadmap is a living document, so after an archive like this one a fresh review starts with a fresh bound;
-for those two, archiving at the bound is therefore also how more rounds are opened. The owner accepted that
+spec, roadmap or ADR is a living document, so after an archive like this one a fresh review starts with a fresh bound;
+for those three, archiving at the bound is therefore also how more rounds are opened. The owner accepted that
 Codex may approve this without them (ADR 0006), because the extra rounds are read-only and advisory. It makes no Codex call and changes only local review state.
 FACTS comes from the installed `ask-codex status`, which verified the review state itself: rounds
 used against the bound, any block, owner grants, and the ids of blocker or major findings that have no recorded

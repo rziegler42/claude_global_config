@@ -48,6 +48,7 @@
       "Bash(ask-codex review-plan:*)",
       "Bash(ask-codex review-spec:*)",
       "Bash(ask-codex review-roadmap:*)",
+      "Bash(ask-codex review-adr:*)",
       "Bash(ask-codex decide:*)",
       "Bash(ask-codex status:*)",
       "Bash(ask-codex models:*)",

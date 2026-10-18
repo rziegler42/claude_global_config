@@ -1,4 +1,4 @@
-"""Tests for spec and roadmap review in bin/ask-codex.
+"""Tests for spec, roadmap and ADR review in bin/ask-codex.
 
 Specification: docs/specs/second-opinion-document-review.md
 
@@ -35,12 +35,28 @@ Updated: 2026-10-17
 Order the widget work.
 """
 
+ADR = """# 0001: Use widgets
+
+Status: Accepted
+Date: 2026-10-17
+
+## Context
+
+Widgets render.
+"""
+
 KINDS = {
     "spec": {"command": "review-spec", "flag": "--spec", "directory": "docs/specs",
              "kind": "spec-review", "text": SPEC},
     "roadmap": {"command": "review-roadmap", "flag": "--roadmap", "directory": "docs/roadmaps",
                 "kind": "roadmap-review", "text": ROADMAP},
+    "adr": {"command": "review-adr", "flag": "--adr", "directory": "docs/decisions",
+            "kind": "adr-review", "text": ADR},
 }
+
+
+PROMPT_NOUN = {"spec": "a specification", "roadmap": "a roadmap", "adr": "an architecture decision record"}
+LEDGER_NAME = {"spec": "spec", "roadmap": "roadmap", "adr": "ADR"}
 
 
 class DocCase(base.RunnerCase):
@@ -131,7 +147,7 @@ class RunTests(DocCase):
                 self.assertEqual(argv[14:], ["-C", str(self.repo), "-"])
                 stdin = self.calls()[-1]["stdin"]
                 self.assertIn("review round 1", stdin)
-                self.assertIn("independent reviewer of a %s" % label.replace("spec", "specification"), stdin)
+                self.assertIn("independent reviewer of %s" % PROMPT_NOUN[label], stdin)
                 code, data, r = self.run_helper(info["command"], info["flag"], self.doc_path(label),
                                                 "--max-rounds", "2")
                 self.assertEqual(code, 2, r.stdout)
@@ -287,10 +303,12 @@ class StateTests(DocCase):
         self.review()
         self.review_doc("spec")
         self.review_doc("roadmap")
-        self.assertEqual(len(self.state_dirs()), 3)
+        self.review_doc("adr")
+        self.assertEqual(len(self.state_dirs()), 4)
         self.assertEqual(len(self.dirs_for("plan-review")), 1)
         self.assertEqual(len(self.dirs_for("spec-review")), 1)
         self.assertEqual(len(self.dirs_for("roadmap-review")), 1)
+        self.assertEqual(len(self.dirs_for("adr-review")), 1)
         for label in KINDS:
             self.assertEqual(self.ok("status", *self.doc_args(label))["rounds_used"], 1)
 
@@ -311,7 +329,7 @@ class StateTests(DocCase):
             with self.subTest(label=label):
                 self.review_doc(label)
                 data = self.ok("archive", *self.doc_args(label))
-                self.assertIn("## Codex %s review" % label, data["summary_markdown"])
+                self.assertIn("## Codex %s review" % LEDGER_NAME[label], data["summary_markdown"])
                 self.assertIn(self.doc_path(label), data["summary_markdown"])
                 status = self.ok("status", *self.doc_args(label))
                 self.assertEqual(status["rounds_used"], 0)
@@ -394,12 +412,12 @@ class StateTests(DocCase):
             with self.subTest(args=args):
                 self.expect_error("status", *args)
 
-    def test_prune_covers_all_three_directory_families(self):
+    def test_prune_covers_all_directory_families(self):
         old = "2026-01-05T00:00:00Z"
         self.ok("init")
         for label in KINDS:
             self.ok("init", *self.doc_args(label))
-        self.assertEqual(len(self.state_dirs()), 3)
+        self.assertEqual(len(self.state_dirs()), 4)
         for directory in self.state_dirs():
             state = json.loads((directory / "state.json").read_text())
             state["closed"] = old

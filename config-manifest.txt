@@ -50,6 +50,9 @@ ask-codex/kinds/spec-review/schema.json
 ask-codex/kinds/roadmap-review/kind.json
 ask-codex/kinds/roadmap-review/prompt.md
 ask-codex/kinds/roadmap-review/schema.json
+ask-codex/kinds/adr-review/kind.json
+ask-codex/kinds/adr-review/prompt.md
+ask-codex/kinds/adr-review/schema.json
 codex-approver/config.json
 codex-approver/rubric.md
 codex-approver/verdict.schema.json

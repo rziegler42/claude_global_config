@@ -1570,8 +1570,8 @@ PENDING_CAP = 50
 def collect_archive(ctx):
     args, root = ctx["args"], ctx["root"]
     helper = ctx["helper"]
-    # The reviewed document: --plan, --spec, or --roadmap. status refuses more than one, which fails closed.
-    named = [(flag, args[flag]) for flag in ("--plan", "--spec", "--roadmap") if args[flag] is not None]
+    # The reviewed document: --plan, --spec, --roadmap, or --adr. status refuses more than one, which fails closed.
+    named = [(flag, args[flag]) for flag in ("--plan", "--spec", "--roadmap", "--adr") if args[flag] is not None]
     plan = named[0][1] if named else None
     facts = {"document_flag": named[0][0] if named else "--plan", "plan_argument": plan[:200] if plan else None, "status_ok": False, "status_error": None,
              "state_found": False, "closed": None, "rounds_used": None, "bound": None, "blocked": None,
