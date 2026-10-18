@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Bounded, read-only Codex plan-review helper.
+"""Bounded, read-only Codex review helper for plans, specs, and roadmaps.
 
-Specification: docs/specs/second-opinion-plan-review.md
+Specifications: docs/specs/second-opinion-plan-review.md and
+docs/specs/second-opinion-document-review.md
 
 Commands:
   init                              prepare review state (no Codex call)
   status                            show rounds, bound, effort, pending decisions
   models                            list the models and efforts Codex offers
-  review-plan                       run one bounded review round
+  review-plan                       run one bounded plan review round
+  review-spec --spec PATH           run one bounded spec review round
+  review-roadmap --roadmap PATH     run one bounded roadmap review round
   decide ID applied|rejected        record a decision on a finding
+
+The per-document commands take --plan (default), --spec, or --roadmap.
 
 All output is one JSON object on stdout:
   {"status": "ok" | "stopped" | "error", ...}
@@ -41,10 +46,18 @@ MEANINGFUL = ("blocker", "major")
 VERDICTS = ("changes_needed", "no_meaningful_changes")
 DEFAULT_PLAN = "docs/plans/next.md"
 KIND = "plan-review"
+# Review kinds: the flag that names the document, the only directory a spec or
+# roadmap may live in (None: a plan may be anywhere in the repository), and the
+# word used in output.
+DOC_KINDS = {
+    "plan-review": {"flag": "plan", "label": "plan", "directory": None},
+    "spec-review": {"flag": "spec", "label": "spec", "directory": "docs/specs"},
+    "roadmap-review": {"flag": "roadmap", "label": "roadmap", "directory": "docs/roadmaps"},
+}
 STATE_SCHEMA = 1
 MAX_PLAN_BYTES = 2 * 1024 * 1024
 MAX_REASON = 2000
-STATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}-plan-review(-\d+)?", re.ASCII)
+STATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}-(plan|spec|roadmap)-review(-\d+)?", re.ASCII)
 FINDING_RE = re.compile(r"R(\d+)-F(\d+)", re.ASCII)
 ENV_PASS = ("PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
 ERROR_LINE = re.compile(r"^ERROR:\s*(\{.*\})\s*$")
@@ -183,7 +196,7 @@ def load_config():
     return config
 
 
-def check_strict(schema, where="schema"):
+def check_strict(schema, where="schema", name=KIND):
     """Strict structured output: closed objects with every property required."""
     if not isinstance(schema, dict):
         return
@@ -192,15 +205,15 @@ def check_strict(schema, where="schema"):
     if "object" in types or "properties" in schema:
         properties = schema.get("properties", {})
         if schema.get("additionalProperties") is not False:
-            raise HelperError("%s is not strict: %s needs additionalProperties: false" % (KIND, where))
+            raise HelperError("%s is not strict: %s needs additionalProperties: false" % (name, where))
         if set(schema.get("required", [])) != set(properties):
             raise HelperError(
-                "%s schema is not strict: %s must list every property in required" % (KIND, where)
+                "%s schema is not strict: %s must list every property in required" % (name, where)
             )
-        for name, child in properties.items():
-            check_strict(child, "%s.%s" % (where, name))
+        for prop, child in properties.items():
+            check_strict(child, "%s.%s" % (where, prop), name)
     if "items" in schema:
-        check_strict(schema["items"], where + "[]")
+        check_strict(schema["items"], where + "[]", name)
 
 
 def load_kind(name=KIND):
@@ -218,7 +231,7 @@ def load_kind(name=KIND):
         schema = json.loads((directory / meta["schema"]).read_text(encoding="utf-8"))
     except ValueError as exc:
         raise HelperError("kind %s: schema is not valid JSON: %s" % (name, exc))
-    check_strict(schema)
+    check_strict(schema, name=name)
     meta["directory"] = directory
     meta["schema_path"] = directory / meta["schema"]
     meta["prompt_path"] = directory / meta["prompt"]
@@ -346,28 +359,34 @@ def repo_root():
     return Path(top).resolve()
 
 
-def resolve_plan(root, argument):
-    if any(not ch.isprintable() for ch in (argument or DEFAULT_PLAN)):
-        raise HelperError("plan path contains control or non-printable characters; refusing it")
-    raw = Path(argument or DEFAULT_PLAN)
+def read_document(root, argument, label):
+    """Validate a repository file named by the owner; return (real path, text)."""
+    if any(not ch.isprintable() for ch in argument):
+        raise HelperError("%s path contains control or non-printable characters; refusing it" % label)
+    raw = Path(argument)
     candidate = raw if raw.is_absolute() else root / raw
     if candidate.is_symlink():
-        raise HelperError("plan path is a symlink: refusing %s" % clean(argument or DEFAULT_PLAN))
+        raise HelperError("%s path is a symlink: refusing %s" % (label, clean(argument)))
     real = candidate.resolve()
     if real != root and root not in real.parents:
-        raise HelperError("plan must be inside the repository: %s" % clean(argument or DEFAULT_PLAN))
+        raise HelperError("%s must be inside the repository: %s" % (label, clean(argument)))
     if not real.exists():
-        raise HelperError("plan not found: %s" % clean(argument or DEFAULT_PLAN))
+        raise HelperError("%s not found: %s" % (label, clean(argument)))
     if not real.is_file():
-        raise HelperError("plan is not a regular file: %s" % clean(argument or DEFAULT_PLAN))
+        raise HelperError("%s is not a regular file: %s" % (label, clean(argument)))
     if real.stat().st_size > MAX_PLAN_BYTES:
-        raise HelperError("plan is larger than %d bytes" % MAX_PLAN_BYTES)
+        raise HelperError("%s is larger than %d bytes" % (label, MAX_PLAN_BYTES))
     try:
         text = real.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise HelperError("plan is not readable text: %s" % exc.__class__.__name__)
+        raise HelperError("%s is not readable text: %s" % (label, exc.__class__.__name__))
     if not text.strip():
-        raise HelperError("plan is empty")
+        raise HelperError("%s is empty" % label)
+    return real, text
+
+
+def resolve_plan(root, argument):
+    real, text = read_document(root, argument or DEFAULT_PLAN, "plan")
     if re.search(r"^Status:\s*Empty\b", text, re.MULTILINE):
         raise HelperError("plan is the empty template: there is no active plan")
     heading = re.search(r"^# (.+)$", text, re.MULTILINE)
@@ -380,12 +399,57 @@ def resolve_plan(root, argument):
         ("%s\n%s" % (heading.group(1).strip(), created.group(1))).encode("utf-8")
     ).hexdigest()[:16]
     return {
+        "kind": KIND,
         "path": real,
         "relative": real.relative_to(root).as_posix(),
         "title": heading.group(1).strip(),
         "created": created.group(1),
         "key": key,
     }
+
+
+def resolve_living_document(root, kind_name, argument):
+    """Resolve a spec or roadmap: a .md file directly in its directory, never a README.
+
+    A living document has no Created line, so its identity is its repository path.
+    """
+    label = DOC_KINDS[kind_name]["label"]
+    relative_directory = DOC_KINDS[kind_name]["directory"]
+    directory = root / relative_directory
+    if not argument:
+        raise HelperError("--%s needs a path" % label, reason="usage")
+    # No component of the document directory may be a link, so the recorded path is the real one.
+    walked = root
+    for part in relative_directory.split("/"):
+        walked = walked / part
+        if walked.is_symlink():
+            raise HelperError("%s directory is a symlink: refusing %s" % (label, relative_directory))
+    real, text = read_document(root, argument, label)
+    if (real.parent != directory.resolve() or real.suffix != ".md"
+            or real.name.lower() == "readme.md"):  # a case-insensitive filesystem keeps the typed case
+        raise HelperError(
+            "%s must be a .md file directly in %s (not README.md): %s"
+            % (label, relative_directory, clean(argument)))
+    if real.stat().st_nlink > 1:
+        raise HelperError("%s is a hard link: refusing %s" % (label, clean(argument)))
+    heading = re.search(r"^# (.+)$", text, re.MULTILINE)
+    if not heading:
+        raise HelperError("%s has no top-level heading" % label)
+    relative = real.relative_to(root).as_posix()
+    return {
+        "kind": kind_name,
+        "path": real,
+        "relative": relative,
+        "title": heading.group(1).strip(),
+        "created": "",
+        "key": hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16],
+    }
+
+
+def resolve_document(root, kind_name, argument):
+    if kind_name == KIND:
+        return resolve_plan(root, argument)
+    return resolve_living_document(root, kind_name, argument)
 
 
 def ensure_excluded(root):
@@ -531,7 +595,9 @@ def find_state(root, plan):
 
     An open review belongs to its plan file: editing the title or the Created
     line must not open a fresh review (and so reset the bound). A closed review
-    is matched only by exact plan identity.
+    is matched only by exact plan identity. Specs and roadmaps are living
+    documents: only an open review matches, so a closed one never blocks a
+    fresh review. Reviews of different kinds never match each other.
     """
     open_match = closed_match = (None, None)
     for directory in state_directories(root):
@@ -541,6 +607,8 @@ def find_state(root, plan):
         if raw is None:
             raise HelperError("review state is corrupt or unreadable; not resetting it: %s"
                               % directory.name)
+        if raw.get("kind", KIND) != plan["kind"]:
+            continue
         recorded = raw.get("plan")
         same_path = recorded == plan["relative"]
         if not same_path and isinstance(recorded, str):
@@ -552,7 +620,8 @@ def find_state(root, plan):
             continue
         state = read_state(directory)
         if state["closed"]:
-            if same_key:
+            # A closed plan review stays closed; a living document may be reviewed again.
+            if same_key and plan["kind"] == KIND:
                 closed_match = (directory, state)
         else:
             open_match = (directory, state)
@@ -562,7 +631,7 @@ def find_state(root, plan):
 def new_state(config, plan):
     return {
         "schema_version": STATE_SCHEMA,
-        "kind": KIND,
+        "kind": plan["kind"],
         "plan": plan["relative"],
         "plan_key": plan["key"],
         "title": plan["title"],
@@ -591,17 +660,17 @@ def record_escalation(state, escalation):
     state.setdefault("escalations", []).append(dict(escalation))
 
 
-def create_state_directory(root):
+def create_state_directory(root, kind_name=KIND):
     debug = debug_directory(root)
     debug.mkdir(mode=0o700, exist_ok=True)
     day = datetime.date.today().isoformat()
-    candidate, counter = debug / ("%s-plan-review" % day), 2
+    candidate, counter = debug / ("%s-%s" % (day, kind_name)), 2
     while True:
         try:
             candidate.mkdir(mode=0o700)
             return candidate
         except FileExistsError:
-            candidate = debug / ("%s-plan-review-%d" % (day, counter))
+            candidate = debug / ("%s-%s-%d" % (day, kind_name, counter))
             counter += 1
 
 
@@ -658,12 +727,16 @@ def pending_decisions(directory, state):
     ]
 
 
+def state_label(state):
+    return DOC_KINDS.get(state.get("kind"), DOC_KINDS[KIND])["label"]
+
+
 def render_ledger(directory, state):
     lines = [
         "# Review ledger",
         "",
-        "Plan: %s" % clean(state.get("plan", "")),
-        "Plan key: %s" % state["plan_key"],
+        "%s: %s" % (state_label(state).capitalize(), clean(state.get("plan", ""))),
+        "%s key: %s" % (state_label(state).capitalize(), state["plan_key"]),
         "Model: %s, effort: %s" % (clean(state["model"]), clean(state["effort"])),
         "Rounds used: %d of %d" % (state["rounds_used"], state["bound"]),
         "",
@@ -824,11 +897,53 @@ def signature(finding):
 # Commands
 
 
-def context(plan_argument):
+def document_kind(args):
+    """The review kind a command addresses: its own default, else the document flag given."""
+    named = getattr(args, "doc_kind", None)
+    if named:
+        return named
+    for kind_name, info in DOC_KINDS.items():
+        if getattr(args, info["flag"], None) is not None:  # an empty value is an error, not "unset"
+            return kind_name
+    return KIND
+
+
+# Commands that act on a review that already exists, so they may name a spec or
+# roadmap that has since been renamed or moved (its review is then orphaned).
+ON_EXISTING_REVIEW = ("status", "decide", "extend", "reset", "archive")
+
+
+def orphaned_document(root, kind_name, argument):
+    """The document of an open spec or roadmap review whose file is gone, else None.
+
+    Only the exact path the review recorded is accepted, so the owner can close
+    the orphan; nothing else is read from disk.
+    """
+    if (kind_name == KIND or not argument or any(not ch.isprintable() for ch in argument)
+            or Path(argument).is_absolute() or os.path.normpath(argument) != argument
+            or (root / argument).exists() or (root / argument).is_symlink()):
+        return None
+    for directory in state_directories(root):
+        raw = peek_state(directory)
+        if (raw and raw.get("kind", KIND) == kind_name and not raw.get("closed")
+                and raw.get("plan") == argument and isinstance(raw.get("plan_key"), str)):
+            return {"kind": kind_name, "path": root / argument, "relative": argument,
+                    "title": str(raw.get("title", "")), "created": "", "key": raw["plan_key"]}
+    return None
+
+
+def context(args):
     config = load_config()
-    kind = load_kind()
+    kind_name = document_kind(args)
+    kind = load_kind(kind_name)
     root = repo_root()
-    plan = resolve_plan(root, plan_argument)
+    argument = getattr(args, DOC_KINDS[kind_name]["flag"], None)
+    try:
+        plan = resolve_document(root, kind_name, argument)
+    except HelperError:
+        plan = orphaned_document(root, kind_name, argument) if args.command in ON_EXISTING_REVIEW else None
+        if plan is None:
+            raise
     return config, kind, root, plan
 
 
@@ -844,9 +959,28 @@ def catalogue_summary(config, state):
             "effort_supported": supported, "upgrade": upgrade}
 
 
+def orphaned_reviews(root, kind_name, current):
+    """Open reviews of this kind whose document no longer exists (for example, renamed)."""
+    orphans = []
+    for directory in state_directories(root):
+        raw = peek_state(directory)
+        if (raw is None or directory == current or raw.get("kind", KIND) != kind_name
+                or raw.get("closed") or not isinstance(raw.get("plan"), str)):
+            continue
+        if not (root / raw["plan"]).exists():
+            orphans.append({"document": clean(raw["plan"]),
+                            "state_dir": directory.relative_to(root).as_posix()})
+    return orphans
+
+
 def summary(config, root, plan, directory, state):
     effective = state or new_state(config, plan)
+    extra = {}
+    if plan["kind"] != KIND:
+        extra["orphaned_reviews"] = orphaned_reviews(root, plan["kind"], directory)
     return {
+        **extra,
+        "kind": plan["kind"],
         "plan": plan["relative"],
         "plan_key": plan["key"],
         "state_dir": directory.relative_to(root).as_posix() if directory else None,
@@ -900,7 +1034,7 @@ def ensure_state(config, root, plan):
                 reason="closed")
         created = False
         if state is None:
-            directory = create_state_directory(root)
+            directory = create_state_directory(root, plan["kind"])
             state = new_state(config, plan)
             with locked(directory):
                 write_state(directory, state)
@@ -911,7 +1045,7 @@ def ensure_state(config, root, plan):
 
 
 def command_status(args):
-    config, kind, root, plan = context(args.plan)
+    config, kind, root, plan = context(args)
     directory, state = find_state(root, plan)
     data = summary(config, root, plan, directory, state)
     data["catalogue"] = catalogue_summary(config, state)
@@ -919,7 +1053,7 @@ def command_status(args):
 
 
 def command_init(args):
-    config, kind, root, plan = context(args.plan)
+    config, kind, root, plan = context(args)
     directory, state, created, exclude_added = ensure_state(config, root, plan)
     emit("ok", exclude_added=exclude_added, created=created,
          **summary(config, root, plan, directory, state))
@@ -942,7 +1076,7 @@ def command_models(args):
 
 
 def command_decide(args):
-    config, kind, root, plan = context(args.plan)
+    config, kind, root, plan = context(args)
     directory, state = find_state(root, plan)
     if state is None:
         raise HelperError("no review state exists for this plan; run init first")
@@ -996,7 +1130,19 @@ def stop_details(directory, state):
 
 
 def command_review_plan(args):
-    config, kind, root, plan = context(args.plan)
+    return command_review(args)
+
+
+def command_review_spec(args):
+    return command_review(args)
+
+
+def command_review_roadmap(args):
+    return command_review(args)
+
+
+def command_review(args):
+    config, kind, root, plan = context(args)
 
     # Per-request arguments are validated before anything is written.
     effort_override = args.effort
@@ -1023,13 +1169,14 @@ def command_review_plan(args):
             if other == directory:
                 continue
             raw = peek_state(other)
-            if (raw and not raw.get("closed") and isinstance(raw.get("rounds_used"), int)
+            if (raw and raw.get("kind", KIND) == plan["kind"] and not raw.get("closed")
+                    and isinstance(raw.get("rounds_used"), int)
                     and isinstance(raw.get("bound"), int) and raw["rounds_used"] >= raw["bound"]):
                 warnings.append(
-                    "another open review in this repository (%s) has used its full bound; "
-                    "a copied or retitled plan does not get a fresh bound without the owner"
+                    "another open review of this kind in this repository (%s) has used its full bound; "
+                    "a copied or retitled document does not get a fresh bound without the owner"
                     % clean(raw.get("plan", other.name)))
-        if state["plan_key"] != plan["key"]:
+        if state["plan_key"] != plan["key"] and plan["kind"] == KIND:
             warnings.append(
                 "plan identity changed since the review started (title or Created line); "
                 "the review continues because rounds are tied to the plan file")
@@ -1094,9 +1241,11 @@ def command_review_plan(args):
 
         # Build the prompt.
         template = kind["prompt_path"].read_text(encoding="utf-8")
-        prompt = (template.replace("{{ROUND}}", str(number))
-                  .replace("{{PLAN_PATH}}", plan["relative"])
-                  .replace("{{LEDGER}}", prompt_ledger(state)))
+        values = {"ROUND": str(number), "PLAN_PATH": plan["relative"], "DOC_PATH": plan["relative"],
+                  "LEDGER": prompt_ledger(state)}
+        # One pass, so a placeholder inside a value (a file name, say) is never expanded.
+        prompt = re.sub(r"\{\{(ROUND|PLAN_PATH|DOC_PATH|LEDGER)\}\}",
+                        lambda match: values[match.group(1)], template)
         out_path = directory / ("round-%d.codex-output.json" % number)
         codex_path = which("codex", search_path(exclude_under=str(root)), exclude_under=str(root))
         if codex_path is None:
@@ -1254,7 +1403,7 @@ def command_review_plan(args):
 
 def open_review(args):
     """Resolve the plan's review state; refuse when absent or closed."""
-    config, kind, root, plan = context(args.plan)
+    config, kind, root, plan = context(args)
     directory, state = find_state(root, plan)
     if state is None:
         raise HelperError("no review state exists for this plan; run a review first")
@@ -1309,8 +1458,9 @@ def command_reset(args):
 
 
 def archive_summary(directory, state):
-    lines = ["## Codex plan review", "",
-             "- Plan: %s (key %s)" % (clean(state.get("plan", "")), state["plan_key"]),
+    label = state_label(state)
+    lines = ["## Codex %s review" % label, "",
+             "- %s: %s (key %s)" % (label.capitalize(), clean(state.get("plan", "")), state["plan_key"]),
              "- Rounds used: %d of %d" % (state["rounds_used"], state["bound"])]
     last_meaningful = None
     for number in range(1, state["rounds_used"] + 1):
@@ -1443,7 +1593,16 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
 
     def add_plan(p):
-        p.add_argument("--plan", help="plan file (default: %s); relative paths are repository-relative" % DEFAULT_PLAN)
+        """The document a per-document command addresses: a plan (default), spec, or roadmap."""
+        group = p.add_mutually_exclusive_group()
+        group.add_argument("--plan", help="plan file (default: %s); relative paths are repository-relative" % DEFAULT_PLAN)
+        group.add_argument("--spec", help="spec file directly in docs/specs/")
+        group.add_argument("--roadmap", help="roadmap file directly in docs/roadmaps/")
+
+    def add_review_options(p):
+        p.add_argument("--max-rounds", type=int, help="bound for this review; only when it starts")
+        p.add_argument("--model", help="model for this request only")
+        p.add_argument("--effort", help="effort for this request only (never above the ceiling)")
 
     p = sub.add_parser("status", help="show review state")
     add_plan(p)
@@ -1453,12 +1612,18 @@ def build_parser():
     p.set_defaults(func=command_init)
     p = sub.add_parser("models", help="list the models and efforts Codex offers")
     p.set_defaults(func=command_models)
-    p = sub.add_parser("review-plan", help="run one bounded review round")
-    add_plan(p)
-    p.add_argument("--max-rounds", type=int, help="bound for this review; only when it starts")
-    p.add_argument("--model", help="model for this request only")
-    p.add_argument("--effort", help="effort for this request only (never above the ceiling)")
-    p.set_defaults(func=command_review_plan)
+    p = sub.add_parser("review-plan", help="run one bounded plan review round")
+    p.add_argument("--plan", help="plan file (default: %s); relative paths are repository-relative" % DEFAULT_PLAN)
+    add_review_options(p)
+    p.set_defaults(func=command_review_plan, doc_kind="plan-review")
+    p = sub.add_parser("review-spec", help="run one bounded spec review round")
+    p.add_argument("--spec", required=True, help="spec file directly in docs/specs/")
+    add_review_options(p)
+    p.set_defaults(func=command_review_spec, doc_kind="spec-review")
+    p = sub.add_parser("review-roadmap", help="run one bounded roadmap review round")
+    p.add_argument("--roadmap", required=True, help="roadmap file directly in docs/roadmaps/")
+    add_review_options(p)
+    p.set_defaults(func=command_review_roadmap, doc_kind="roadmap-review")
     p = sub.add_parser("extend", help="grant 1-5 more rounds (owner approval)")
     add_plan(p)
     p.add_argument("rounds", type=int, help="rounds to add, 1 to %d" % HARD_ROUND_CEILING)

@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 GATED = ("extend", "reset", "prune", "archive")
-OPEN = ("review-plan", "decide", "status", "models", "init")
+OPEN = ("review-plan", "review-spec", "review-roadmap", "decide", "status", "models", "init")
 SPELLINGS = (
     "ask-codex {cmd}",
     "~/.claude/bin/ask-codex {cmd}",
@@ -25,8 +25,21 @@ MANIFEST_PATHS = (
     "ask-codex/kinds/plan-review/kind.json",
     "ask-codex/kinds/plan-review/prompt.md",
     "ask-codex/kinds/plan-review/schema.json",
+    "ask-codex/kinds/spec-review/kind.json",
+    "ask-codex/kinds/spec-review/prompt.md",
+    "ask-codex/kinds/spec-review/schema.json",
+    "ask-codex/kinds/roadmap-review/kind.json",
+    "ask-codex/kinds/roadmap-review/prompt.md",
+    "ask-codex/kinds/roadmap-review/schema.json",
     "skills/second-opinion/SKILL.md",
 )
+# What each document kind's prompt must ask the reviewer to judge.
+KIND_CRITERIA = {
+    "spec-review": ("scope", "non-goals", "acceptance criteria", "testable", "adr",
+                    "implementation sequencing", "work log"),
+    "roadmap-review": ("promotion trigger", "dependencies", "plan-boundary", "file lists",
+                       "authoriz", "adr", "status"),
+}
 
 
 def manifest():
@@ -44,6 +57,24 @@ class ManifestAndInstaller(unittest.TestCase):
         for path in MANIFEST_PATHS:
             self.assertIn(path, listed)
             self.assertTrue((ROOT / path).is_file(), path)
+
+    def test_document_kinds_are_complete_and_share_the_plan_schema(self):
+        kinds = ROOT / "ask-codex" / "kinds"
+        plan_schema = json.loads((kinds / "plan-review" / "schema.json").read_text())
+        for name, phrases in KIND_CRITERIA.items():
+            with self.subTest(kind=name):
+                meta = json.loads((kinds / name / "kind.json").read_text())
+                self.assertEqual(meta["name"], name)
+                self.assertEqual((meta["prompt"], meta["schema"]), ("prompt.md", "schema.json"))
+                self.assertTrue(meta["uses_loop"] and meta["uses_ledger"])
+                self.assertEqual(json.loads((kinds / name / "schema.json").read_text()), plan_schema)
+                prompt = (kinds / name / "prompt.md").read_text()
+                for placeholder in ("{{ROUND}}", "{{DOC_PATH}}", "{{LEDGER}}"):
+                    self.assertIn(placeholder, prompt)
+                self.assertNotIn("{{PLAN_PATH}}", prompt)
+                lowered = prompt.lower()
+                for phrase in ("read-only", "do not invent problems", "blocker", "reraises") + phrases:
+                    self.assertIn(phrase, lowered, phrase)
 
     def test_helper_is_executable_with_shebang(self):
         path = ROOT / "bin" / "ask-codex"
@@ -102,6 +133,23 @@ class Skill(unittest.TestCase):
         for phrase in ("only edit", "extend", "reset", "prune", "proposed", "archive",
                        "read-only", "max-rounds", "never"):
             self.assertIn(phrase, lowered, phrase)
+
+    def test_skill_covers_specs_and_roadmaps(self):
+        lowered = " ".join(self.text.lower().split())
+        head = self.text.split("---", 2)[1].lower()
+        for phrase in ("spec", "roadmap"):
+            self.assertIn(phrase, head)
+        for phrase in ("review-spec", "review-roadmap", "--spec", "--roadmap",
+                       "any status", "no status gate",
+                       "only edit the document under review",
+                       "never run `archive` to get around a bound",
+                       "fresh review"):
+            self.assertIn(phrase, lowered, phrase)
+        self.assertIn("proposed", lowered)  # plan review keeps its gate
+
+    def test_plan_review_spec_points_to_the_document_review_spec(self):
+        text = (ROOT / "docs" / "specs" / "second-opinion-plan-review.md").read_text()
+        self.assertIn("second-opinion-document-review.md", text)
 
     def test_skill_treats_findings_as_untrusted_and_forbids_state_edits(self):
         lowered = " ".join(self.text.lower().split())

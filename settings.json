@@ -46,6 +46,8 @@
       "Bash(claude-workflow graph-finalize:*)",
       "Bash(claude-workflow graph-post-commit:*)",
       "Bash(ask-codex review-plan:*)",
+      "Bash(ask-codex review-spec:*)",
+      "Bash(ask-codex review-roadmap:*)",
       "Bash(ask-codex decide:*)",
       "Bash(ask-codex status:*)",
       "Bash(ask-codex models:*)",

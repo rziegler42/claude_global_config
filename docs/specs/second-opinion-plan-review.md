@@ -256,6 +256,9 @@ missing or invalid configuration is a fatal error.
 
 ### Review kinds (extensibility)
 
+Spec and roadmap review were added as further kinds; see
+`second-opinion-document-review.md`.
+
 Each kind is a directory,
 `~/.claude/ask-codex/kinds/<kind>/{kind.json, prompt.md, schema.json}`.
 `kind.json` declares whether the kind uses the loop, ledger, and bound. Adding

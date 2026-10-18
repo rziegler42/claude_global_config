@@ -10,7 +10,9 @@
   "rubric": "ask-codex-archive",
   "required": [],
   "flags": {
-    "--plan": "value"
+    "--plan": "value",
+    "--spec": "value",
+    "--roadmap": "value"
   },
   "positionals": "none",
   "review_checks": [

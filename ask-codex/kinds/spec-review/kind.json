@@ -1,0 +1,8 @@
+{
+  "name": "spec-review",
+  "description": "Review a specification; a bounded loop with a ledger of decisions",
+  "uses_loop": true,
+  "uses_ledger": true,
+  "prompt": "prompt.md",
+  "schema": "schema.json"
+}

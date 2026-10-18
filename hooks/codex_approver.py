@@ -1552,18 +1552,20 @@ PENDING_CAP = 50
 def collect_archive(ctx):
     args, root = ctx["args"], ctx["root"]
     helper = ctx["helper"]
-    plan = args["--plan"]
-    facts = {"plan_argument": plan[:200] if plan else None, "status_ok": False, "status_error": None,
+    # The reviewed document: --plan, --spec, or --roadmap. status refuses more than one, which fails closed.
+    named = [(flag, args[flag]) for flag in ("--plan", "--spec", "--roadmap") if args[flag] is not None]
+    plan = named[0][1] if named else None
+    facts = {"document_flag": named[0][0] if named else "--plan", "plan_argument": plan[:200] if plan else None, "status_ok": False, "status_error": None,
              "state_found": False, "closed": None, "rounds_used": None, "bound": None, "blocked": None,
              "pending_decisions": [], "pending_count": None, "grants": [], "secret_hits": []}
-    if secret_kind(plan or "") == "pattern":
+    if any(secret_kind(value) == "pattern" for _flag, value in named):
         facts["secret_hits"].append({"path": "<plan-argument>", "kind": "pattern"})
     boundary = helper.repository_boundary(root)
     python, _why = find_on_path("python3", os.environ.get("PATH", ""), str(root))
     if python is None or is_inside(python, boundary):
         facts["status_error"] = "no_trusted_python"
         return facts
-    argv = [python, "-B", str(INSTALLED_TOOLS["ask-codex"]), "status"] + (["--plan=" + plan] if plan else [])
+    argv = [python, "-B", str(INSTALLED_TOOLS["ask-codex"]), "status"] + ["%s=%s" % pair for pair in named]
     env = {name: os.environ[name] for name in ENV_PASS if name in os.environ}
     env.update({name: value for name, value in os.environ.items() if name.startswith("GIT_")})
     env["PATH"] = os.pathsep.join(helper.trusted_path_entries(boundary) or ["/usr/bin", "/bin"])

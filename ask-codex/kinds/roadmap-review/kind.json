@@ -1,0 +1,8 @@
+{
+  "name": "roadmap-review",
+  "description": "Review a roadmap; a bounded loop with a ledger of decisions",
+  "uses_loop": true,
+  "uses_ledger": true,
+  "prompt": "prompt.md",
+  "schema": "schema.json"
+}

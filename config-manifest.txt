@@ -44,6 +44,12 @@ ask-codex/config.json
 ask-codex/kinds/plan-review/kind.json
 ask-codex/kinds/plan-review/prompt.md
 ask-codex/kinds/plan-review/schema.json
+ask-codex/kinds/spec-review/kind.json
+ask-codex/kinds/spec-review/prompt.md
+ask-codex/kinds/spec-review/schema.json
+ask-codex/kinds/roadmap-review/kind.json
+ask-codex/kinds/roadmap-review/prompt.md
+ask-codex/kinds/roadmap-review/schema.json
 codex-approver/config.json
 codex-approver/rubric.md
 codex-approver/verdict.schema.json
