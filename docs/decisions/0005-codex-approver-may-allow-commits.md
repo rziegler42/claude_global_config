@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-10-17
+Widened by ADR 0006: `ask-codex archive` joins the ceiling; the rest of this record stands.
 
 ## Context
 

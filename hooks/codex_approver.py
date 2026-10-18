@@ -72,8 +72,9 @@ FLAG_RE = re.compile(r"--[a-z][a-z-]{0,31}|-[A-Za-z]")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
 CONFIG_KEYS = {"mode", "model", "effort", "codex_timeout_seconds", "max_log_bytes", "notify", "delegate"}
 # The only rules the approver may ever allow without the owner. Widening this is a code change that needs
-# its own ADR; the `delegate` list in config.json can only choose among these, never add to them.
-DELEGABLE = frozenset({"claude-workflow-commit"})
+# its own ADR (0005 for commit, 0006 for archive); the `delegate` list in config.json can only choose
+# among these, never add to them.
+DELEGABLE = frozenset({"claude-workflow-commit", "ask-codex-archive"})
 ALLOW_OUTPUT = json.dumps(
     {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
     separators=(",", ":"))

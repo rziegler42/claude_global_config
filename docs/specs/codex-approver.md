@@ -47,7 +47,7 @@ else leaves the normal prompt to the owner.
 | Topic | Decision |
 |---|---|
 | Goal | Codex decides in the owner's place for trusted helper prompts, treating the requester as mostly untrusted |
-| Authority | Advice-only first. Increment 2 (ADR 0005, 2026-10-17): `allow` for `claude-workflow commit` only, behind a code ceiling and a `delegate` list; every other rule stays advice-only |
+| Authority | Advice-only first. Increment 2 (ADR 0005, 2026-10-17): `allow` for `claude-workflow commit` only, behind a code ceiling and a `delegate` list. ADR 0006 (2026-10-18) adds `ask-codex archive` to the ceiling; every other rule stays advice-only |
 | Modes | Used mostly in `auto` mode, so the hook must act on `ask`-rule prompts |
 | Gate | Deterministic first, Codex second; Codex can confirm or veto, never promote |
 | Facts | The gate collects them with trusted code; the requester's text is not a source |
@@ -114,7 +114,7 @@ result is 176 valid calls, not 216. Real review prompts took 5.0 to 10.4 s.
    short timeout (15 s). Its reply must validate against a strict schema.
 7. Verdict `approve` requires every check to pass and Codex to approve.
 8. The verdict is logged and notified. In increment 1 nothing else happens.
-   In increment 2 an `approve` of a delegated rule (today only `claude-workflow-commit`, in `delegate` mode) also prints the
+   In increment 2 an `approve` of a delegated rule (today `claude-workflow-commit` and `ask-codex-archive`, in `delegate` mode) also prints the
    `behavior: allow` decision, after the verdict row is written. Any other outcome prints nothing.
 
 ### Rules
@@ -154,7 +154,7 @@ Initial deterministic checks:
 ### Delegation (increment 2, ADR 0005)
 
 `config.json` has `mode` (`advise` or `delegate`) and `delegate`, a list of rule ids. `DELEGABLE` in the hook, not the
-config, fixes which rules may ever be delegated; today that is `claude-workflow-commit` alone. `advise` requires an empty
+config, fixes which rules may ever be delegated; today that is `claude-workflow-commit` and `ask-codex-archive` (ADR 0006). `advise` requires an empty
 list and `delegate` a non-empty one; anything outside the ceiling, a duplicate, or a wrong type is a configuration error and
 the hook decides nothing. In `delegate` mode an `approve` for a listed rule logs the verdict with `decision: allow` and then
 prints the single fixed allow decision; every other result logs `decision: none` and prints nothing. `--report` counts
@@ -168,7 +168,7 @@ parity.
 
 ### Advice for push and remote-runner
 
-Five further rules log advice only, for `git push`, `remote-runner submit`, `fetch`, `cancel` and `prune`, and `ask-codex archive`
+Five further rules log advice only, for `git push`, `remote-runner submit`, `fetch`, `cancel` and `prune`, and a sixth, `ask-codex archive`, is advice-only unless delegated (ADR 0006)
 (`git` matches only the bare word; `remote-runner` and `ask-codex` in the five spellings the settings list). They exist to measure
 how often Codex and the owner agree, as `--report` shows per rule. Their collectors use local files and Git state
 only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Facts about the remote's current state
@@ -194,13 +194,13 @@ only: no SSH, no `remote-runner status`, no `git ls-remote`, and no network. Fac
 - prune: a configured remote and finite, non-negative retention periods; `--apply` and shortened retention are facts
   for the reviewer.
 
-- archive: `ask-codex archive [--plan <file>]` closes a plan review. The collector runs the installed
+- archive: `ask-codex archive [--plan <file> | --spec <file> | --roadmap <file>]` closes a plan, spec or roadmap review. The collector runs the installed
   `ask-codex status`, a local read-only command that verifies the review state's seal itself, under the hardened Git
   environment with a timeout and an output cap, and keeps rounds used, the bound, any block, owner grants, `closed`
   and the ids of undecided blocker or major findings. The hook never reads the seal key or the round files. A missing
   or unverifiable review state declines; an unfinished review is a fact for the reviewer.
 
-None of these rules approves anything. The hook still prints no decision.
+Of these rules, only `ask-codex archive` can be delegated (ADR 0006); for the others the hook still prints no decision.
 
 ### Codex rubric
 
@@ -287,8 +287,8 @@ modules and state the Claude Code dependency in its documentation.
 6. A `deny` rule is never bypassed; adding a rule requires only a rule file and
    a fixture.
 7. The hook declares its own short timeout and returns within it.
-8. In increment 2, only `claude-workflow-commit` can return `allow` (the ceiling is code, the `delegate` list can only
-   choose among those), and the owner's approval and policy change are recorded in ADR 0005.
+8. In increment 2, only `claude-workflow-commit` and `ask-codex-archive` can return `allow` (the ceiling is code, the `delegate` list can only
+   choose among those), and the owner's approval and policy change are recorded in ADR 0005 (commit) and ADR 0006 (archive).
 9. The security review passes (adversarial probes of every boundary above).
 10. A live check in `auto` mode shows an `ask`-tier commit or remove prompt
     receiving a logged verdict.

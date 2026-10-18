@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-10-16
-Amended by ADR 0005: `claude-workflow commit` alone may now be allowed; everything else here stands.
+Amended by ADR 0005 and ADR 0006: `claude-workflow commit` and `ask-codex archive` alone may now be allowed; everything else here stands.
 
 ## Context
 

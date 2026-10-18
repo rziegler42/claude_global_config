@@ -191,9 +191,11 @@ class ConfigAndRuleLoadingTests(unittest.TestCase):
             {k: v for k, v in CONFIG.items() if k != "delegate"},
             # advice-only mode must not carry a delegation list, and delegate mode needs one
             dict(CONFIG, delegate=["claude-workflow-commit"]), dict(DELEGATING, delegate=[]),
-            # only the commit rule is on the ceiling; anything else, duplicates and bad shapes are refused
+            # only the commit and archive rules are on the ceiling; anything else, duplicates and bad shapes are refused
             dict(DELEGATING, delegate=["git-push"]), dict(DELEGATING, delegate=["claude-workflow-remove"]),
             dict(DELEGATING, delegate=["claude-workflow-commit", "git-push"]),
+            dict(DELEGATING, delegate=["ask-codex-archive", "git-push"]),
+            dict(DELEGATING, delegate=["ask-codex-prune"]),
             dict(DELEGATING, delegate=["claude-workflow-commit", "claude-workflow-commit"]),
             dict(DELEGATING, delegate="claude-workflow-commit"), dict(DELEGATING, delegate=[None]),
             dict(DELEGATING, delegate=[["claude-workflow-commit"]]), dict(DELEGATING, delegate=None),
@@ -206,9 +208,13 @@ class ConfigAndRuleLoadingTests(unittest.TestCase):
                 with self.assertRaises(ca.ConfigError):
                     ca.load_config(path)
 
-    def test_load_config_accepts_delegation_of_the_commit_rule_only(self):
+    def test_load_config_accepts_delegation_of_the_commit_and_archive_rules_only(self):
         self.assertEqual(ca.load_config(self.write("config.json", DELEGATING)), DELEGATING)
-        self.assertEqual(ca.DELEGABLE, frozenset({"claude-workflow-commit"}))
+        both = dict(DELEGATING, delegate=["claude-workflow-commit", "ask-codex-archive"])
+        self.assertEqual(ca.load_config(self.write("config.json", both)), both)
+        archive = dict(DELEGATING, delegate=["ask-codex-archive"])
+        self.assertEqual(ca.load_config(self.write("config.json", archive)), archive)
+        self.assertEqual(ca.DELEGABLE, frozenset({"claude-workflow-commit", "ask-codex-archive"}))
 
     def test_load_config_missing_file_is_an_error(self):
         with self.assertRaises(ca.ConfigError):

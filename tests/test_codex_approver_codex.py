@@ -267,7 +267,7 @@ ALLOW_OUTPUT = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "de
 
 
 class DelegationTests(HookEndToEndTests):
-    """Authority: only an approved, delegated commit prompt prints an allow; everything else prints nothing."""
+    """Authority: only an approved, delegated commit or archive prompt prints an allow; everything else prints nothing."""
 
     def delegate(self, **changes):
         path = self.claude / "codex-approver" / "config.json"
@@ -345,12 +345,18 @@ class DelegationTests(HookEndToEndTests):
 class DecisionFunctionTests(unittest.TestCase):
     """The emission itself enforces the ceiling, so a forged config object cannot widen it."""
 
-    DELEGATING = {"mode": "delegate", "delegate": ["claude-workflow-commit"]}
+    DELEGATING = {"mode": "delegate", "delegate": ["claude-workflow-commit", "ask-codex-archive"]}
 
-    def test_only_an_approved_delegated_commit_allows(self):
+    def test_only_an_approved_delegated_commit_or_archive_allows(self):
         decide = ca.delegated_decision
         self.assertEqual(decide(self.DELEGATING, "claude-workflow-commit", "approve"), "allow")
-        for rule in ("claude-workflow-remove", "git-push", "remote-runner-submit", "ask-codex-archive", "x", None):
+        self.assertEqual(decide(self.DELEGATING, "ask-codex-archive", "approve"), "allow")
+        # a rule on the ceiling but absent from the owner's list is not allowed
+        self.assertEqual(decide(dict(self.DELEGATING, delegate=["claude-workflow-commit"]),
+                                "ask-codex-archive", "approve"), "none")
+        for verdict in ("decline", "no_verdict"):
+            self.assertEqual(decide(self.DELEGATING, "ask-codex-archive", verdict), "none")
+        for rule in ("claude-workflow-remove", "git-push", "remote-runner-submit", "ask-codex-prune", "x", None):
             with self.subTest(rule=rule):
                 self.assertEqual(decide(dict(self.DELEGATING, delegate=[rule]), rule, "approve"), "none")
                 self.assertEqual(decide(self.DELEGATING, rule, "approve"), "none")

@@ -6,6 +6,7 @@
   "max_log_bytes": 5242880,
   "notify": true,
   "delegate": [
-    "claude-workflow-commit"
+    "claude-workflow-commit",
+    "ask-codex-archive"
   ]
 }

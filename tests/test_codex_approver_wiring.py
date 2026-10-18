@@ -115,10 +115,11 @@ class SettingsWiringTests(unittest.TestCase):
                            env={"PATH": "relative:", "HOME": "/nonexistent"})
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
-    def test_shipped_config_delegates_the_commit_rule_and_nothing_else(self):
-        # ADR 0005. Revoking the authority means mode "advise" with an empty list (also valid); never any other rule.
+    def test_shipped_config_delegates_the_commit_and_archive_rules_and_nothing_else(self):
+        # ADR 0005 and ADR 0006. Revoking the authority means mode "advise" with an empty list (also valid); never any other rule.
         config = json.loads((ROOT / "codex-approver" / "config.json").read_text())
-        self.assertEqual((config["mode"], config["delegate"]), ("delegate", ["claude-workflow-commit"]))
+        self.assertEqual((config["mode"], config["delegate"]),
+                         ("delegate", ["claude-workflow-commit", "ask-codex-archive"]))
 
     def test_the_hook_is_not_a_permission_rule_and_no_rule_was_relaxed(self):
         permissions = settings()["permissions"]

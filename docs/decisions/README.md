@@ -47,4 +47,5 @@ List every ADR, including rejected and superseded records.
 | [0002](0002-snapshot-bundle-submission.md) | Test uncommitted work by submitting a snapshot bundle | Accepted |
 | [0003](0003-remote-runner-fetch.md) | Retrieve job output with a framed fetch over the worker channel | Accepted |
 | [0004](0004-codex-approver-advice-only.md) | A Codex approver for trusted helper prompts, advice-only first | Accepted |
-| [0005](0005-codex-approver-may-allow-commits.md) | The Codex approver may allow `claude-workflow commit`, and nothing else | Accepted |
+| [0005](0005-codex-approver-may-allow-commits.md) | The Codex approver may allow `claude-workflow commit`, and nothing else (originally; widened by 0006) | Accepted |
+| [0006](0006-codex-approver-may-allow-archive.md) | The Codex approver may also allow `ask-codex archive` | Accepted |

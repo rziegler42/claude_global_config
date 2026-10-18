@@ -277,19 +277,24 @@ class ArchiveFactsTests(ArchiveCase):
         self.assertIn("rubric: ask-codex-archive", prompt)
 
 
+def install_hook(case):
+    """Copy the hook, its data and the commit helper into the case's scratch home."""
+    claude = case.home / ".claude"
+    (claude / "hooks").mkdir()
+    shutil.copy2(HOOK, claude / "hooks" / "codex_approver.py")
+    (claude / "bin" / "claude-workflow").unlink()
+    shutil.copy2(ROOT / "bin" / "claude-workflow", claude / "bin" / "claude-workflow")
+    shutil.copytree(ROOT / "codex-approver", claude / "codex-approver", ignore=shutil.ignore_patterns("log"))
+    config = json.loads((claude / "codex-approver" / "config.json").read_text())
+    config["notify"] = False
+    (claude / "codex-approver" / "config.json").write_text(json.dumps(config))
+    case.claude = claude
+
+
 class EndToEndArchiveTests(ArchiveCase):
     def setUp(self):
         super().setUp()
-        claude = self.home / ".claude"
-        (claude / "hooks").mkdir()
-        shutil.copy2(HOOK, claude / "hooks" / "codex_approver.py")
-        (claude / "bin" / "claude-workflow").unlink()
-        shutil.copy2(ROOT / "bin" / "claude-workflow", claude / "bin" / "claude-workflow")
-        shutil.copytree(ROOT / "codex-approver", claude / "codex-approver", ignore=shutil.ignore_patterns("log"))
-        config = json.loads((claude / "codex-approver" / "config.json").read_text())
-        config["notify"] = False
-        (claude / "codex-approver" / "config.json").write_text(json.dumps(config))
-        self.claude = claude
+        install_hook(self)
 
     def fire(self, command, event="PermissionRequest", **extra):
         payload = {"hook_event_name": event, "tool_name": "Bash", "cwd": str(self.repo),
@@ -317,6 +322,78 @@ class EndToEndArchiveTests(ArchiveCase):
     def test_a_missing_review_is_declined_by_name(self):
         self.fire("ask-codex archive")
         self.assertEqual(self.rows("verdicts.jsonl")[0]["failed_checks"], ["status_ok"])
+
+
+class DelegatedArchiveTests(ArchiveCase):
+    """ADR 0006: an approved, delegated archive prints exactly the allow decision; nothing else does."""
+
+    ALLOW = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}
+    APPROVE = {"verdict": "approve", "failed_checks": [], "reason": "The review is finished."}
+    rows = EndToEndArchiveTests.rows
+
+    def setUp(self):
+        super().setUp()
+        install_hook(self)
+        shutil.copy2(ROOT / "tests" / "fixtures" / "fake_codex", self.bin / "codex")
+        self.ask_codex("init")
+
+    def delegate(self, rules):
+        path = self.claude / "codex-approver" / "config.json"
+        config = json.loads(path.read_text())
+        config.update(mode="delegate" if rules else "advise", delegate=rules)
+        path.write_text(json.dumps(config))
+
+    def scenario(self, response):
+        (self.bin / "scenario.json").write_text(json.dumps({"responses": [response]}))
+
+    def run_hook(self, command="ask-codex archive"):
+        payload = {"hook_event_name": "PermissionRequest", "tool_name": "Bash", "cwd": str(self.repo),
+                   "tool_input": {"command": command}, "permission_mode": "auto"}
+        env = {"HOME": str(self.home), "PATH": self.path_value}
+        run = subprocess.run([sys.executable, "-B", str(self.claude / "hooks" / "codex_approver.py")],
+                             input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return run.stdout
+
+    def test_an_approved_delegated_archive_prints_exactly_the_allow_decision(self):
+        self.delegate(["ask-codex-archive"])
+        self.scenario({"mode": "ok", "result": self.APPROVE})
+        out = self.run_hook()
+        self.assertEqual(json.loads(out), self.ALLOW)
+        self.assertEqual(out.count("\n"), 1)
+        row = self.rows("verdicts.jsonl")[0]
+        self.assertEqual((row["rule"], row["verdict"], row["mode"], row["decision"]),
+                         ("ask-codex-archive", "approve", "delegate", "allow"))
+
+    def test_the_shipped_config_delegates_archive(self):
+        self.scenario({"mode": "ok", "result": self.APPROVE})
+        self.assertEqual(json.loads(self.run_hook()), self.ALLOW)
+
+    def test_a_decline_and_a_codex_failure_print_nothing(self):
+        self.delegate(["ask-codex-archive"])
+        for response, verdict in (
+                ({"mode": "ok", "result": {"verdict": "decline", "failed_checks": ["review_is_finished"],
+                                           "reason": "Findings are undecided."}}, "decline"),
+                ({"mode": "error", "stderr": "x", "exit": 1}, "no_verdict")):
+            with self.subTest(verdict=verdict):
+                self.scenario(response)
+                self.assertEqual(self.run_hook(), "")
+                row = self.rows("verdicts.jsonl")[-1]
+                self.assertEqual((row["verdict"], row["decision"]), (verdict, "none"))
+
+    def test_advice_mode_and_a_commit_only_list_print_nothing_for_archive(self):
+        self.scenario({"mode": "ok", "result": self.APPROVE})
+        for rules in ([], ["claude-workflow-commit"]):
+            with self.subTest(rules=rules):
+                self.delegate(rules)
+                self.assertEqual(self.run_hook(), "")
+                self.assertEqual(self.rows("verdicts.jsonl")[-1]["decision"], "none")
+
+    def test_a_failed_deterministic_check_never_reaches_allow(self):
+        self.delegate(["ask-codex-archive"])
+        self.scenario({"mode": "ok", "result": self.APPROVE})
+        self.assertEqual(self.run_hook("ask-codex archive --plan docs/plans/missing.md"), "")
+        self.assertEqual(self.rows("verdicts.jsonl")[-1]["decision"], "none")
 
 
 if __name__ == "__main__":
