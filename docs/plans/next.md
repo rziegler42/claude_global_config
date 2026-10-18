@@ -210,6 +210,13 @@ Affected areas: `skills/knowledge-base-authoring/SKILL.md`,
 
 Completion: the wiring test passes and the install check is clean.
 
+Done 2026-10-18: `skills/knowledge-base-authoring/SKILL.md` and `references/create-and-upgrade.md` written, two manifest
+lines and the README bullet added; the wiring test passes (11 tests); `python3 install.py` synced `~/.claude` and
+`install.py --check` reports no drift; the full suite passes (934 tests, 5 skipped). One test change: three phrases
+(`skipped`, `git diff`, `git status`) moved from the upgrade section to "Check and report", where the reference reports them.
+Not yet shown: the skill's behavior (Increment C). The dry-run labels `skip` and `conflict` that the edited-tools rule relies
+on were read from the installer source, not yet observed in a run.
+
 ### Increment C — Live check
 
 Dependencies: Increment B; decision point 2

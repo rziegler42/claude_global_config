@@ -119,10 +119,7 @@ UPGRADE = (
     'git -c "<checkout>" rev-parse head',
     "`--upgrade --dir`",
     "`--dry-run`",
-    "skipped",
     "conflict",
-    "`git diff`",
-    "`git status`",
     "under `tools/`",
     "ask before running",
     "owner-edited",
@@ -132,6 +129,9 @@ CHECK = (
     "`kb_status.py`",
     "report both",
     "the files the upgrade skipped",
+    "skipped or conflicted",
+    "`git diff`",
+    "`git status`",
 )
 REGISTRATION = (
     "registration line",

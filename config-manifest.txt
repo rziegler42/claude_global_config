@@ -66,3 +66,5 @@ codex-approver/rules/remote-runner-prune.json
 codex-approver/rules/remote-runner-submit.json
 skills/second-opinion/SKILL.md
 skills/knowledge-base/SKILL.md
+skills/knowledge-base-authoring/SKILL.md
+skills/knowledge-base-authoring/references/create-and-upgrade.md
