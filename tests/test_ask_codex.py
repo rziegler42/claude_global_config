@@ -261,6 +261,8 @@ class PlanTests(AskCodexCase):
         # and a closed review would silently block the second.
         self.plan.write_text(PLAN.replace("Add a verbose flag", "Next plan"))
         self.expect_error("init", contains="placeholder title")
+        self.plan.write_text(PLAN.replace("Add a verbose flag", "REPLACE_WITH_PLAN_TITLE"))
+        self.expect_error("init", contains="placeholder title")
         self.plan.write_text(PLAN.replace("2026-10-15", "YYYY-MM-DD"))
         self.expect_error("init", contains="placeholder Created")
 

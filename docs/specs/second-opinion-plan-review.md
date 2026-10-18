@@ -195,7 +195,7 @@ differ.
   and reset the bound; the helper warns that the identity changed. A closed
   review is matched only by exact identity, so a new plan can start after
   `archive`. The identity hashes title and `Created:`, so a plan whose title is
-  the template's `Next plan` or whose `Created:` is still `YYYY-MM-DD` is
+  the template's `Next plan` or a `REPLACE_WITH_` placeholder, or whose `Created:` is still `YYYY-MM-DD` is
   refused; otherwise same-day plans would share an identity with a closed one.
 - **Input hardening (security review).** Model names must match
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`; plan paths with control characters are

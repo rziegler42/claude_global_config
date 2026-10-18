@@ -397,8 +397,9 @@ def resolve_plan(root, argument):
         raise HelperError("plan has no Created: line")
     # The identity is a hash of title and Created, so the template's placeholders would
     # make every plan drafted on one day look like the same (possibly closed) plan.
-    if heading.group(1).strip().lower() == "next plan":
-        raise HelperError("plan still has the placeholder title 'Next plan': give it a real top-level heading")
+    if heading.group(1).strip().lower() == "next plan" or heading.group(1).strip().startswith("REPLACE_WITH_"):
+        raise HelperError("plan still has a placeholder title (%s): give it a real top-level heading"
+                          % clean(heading.group(1).strip()))
     if created.group(1) == "YYYY-MM-DD":
         raise HelperError("plan still has the placeholder Created: YYYY-MM-DD: set the real date")
     key = hashlib.sha256(
