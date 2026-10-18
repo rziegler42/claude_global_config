@@ -39,6 +39,13 @@ RULES = (
     "resolves outside the store",
     "does not run it",
     "a change between the check and the run",
+    "the installer's own output",
+    "`next:` hint",
+    "check what a tool imports",
+    "`__pycache__`",
+    "ls -a -- ",
+    "`python3 -b -i`",
+    "control character",
 )
 TARGET = (
     "never default",
@@ -61,6 +68,8 @@ CHECKOUT = (
     "python3 -i",
     "absolute path",
     "`--dry-run` first",
+    "hostile checkout",
+    "their own",
     "does not rely on the current directory",
 )
 IDENTITY = (
@@ -77,6 +86,7 @@ PERMISSIONS = (
     "never commit or push",
     "never register",
     "never install a dependency",
+    "skipped or conflicted on a tool",
 )
 OPERATIONS = (
     "references/create-and-upgrade.md",
@@ -108,6 +118,11 @@ CREATE = (
     "untrusted data",
     "`check_kb.py`",
     "`kb_status.py`",
+    "positional",
+    "`--dir` belongs to `--upgrade` only",
+    "wait for the owner to confirm",
+    "report its message verbatim",
+    "only when the value is `docs/kb/knowledge-base-format.md`",
 )
 UPGRADE = (
     "preflight",
@@ -123,6 +138,9 @@ UPGRADE = (
     "under `tools/`",
     "ask before running",
     "owner-edited",
+    "40 lowercase hexadecimal",
+    "run no tool",
+    "only when the value is `docs/kb/knowledge-base-format.md`",
 )
 CHECK = (
     "`check_kb.py`",
@@ -138,6 +156,7 @@ REGISTRATION = (
     "--register",
     "the owner runs it",
     "do not run it",
+    "the `next:` hint",
 )
 NEVER = (
     "never registers",
@@ -223,11 +242,18 @@ class RequiredStatements(unittest.TestCase):
         self.assertNotEqual(reads, -1)
         self.assertLess(reads, tools)
 
+    def test_create_confirms_the_target_before_the_dry_run(self):
+        text = sections(REFERENCE).get("create a store", "")
+        confirm = text.find("wait for the owner to confirm")
+        dry_run = text.find("and show the owner the installer run")
+        self.assertNotEqual(confirm, -1)
+        self.assertLess(confirm, dry_run)
+
     def test_upgrade_preflight_comes_before_the_manifest_read_and_the_run(self):
         text = sections(REFERENCE).get("upgrade a store", "")
-        preflight = text.find("preflight")
-        manifest = text.find("`.kb-manifest`")
-        run = text.find("`--upgrade --dir`")
+        preflight = text.find("2. preflight")
+        manifest = text.find("3. read the store's `.kb-manifest`")
+        run = text.find("4. show the owner the installer's `--upgrade --dir`")
         self.assertNotEqual(preflight, -1)
         self.assertLess(preflight, manifest)
         self.assertLess(manifest, run)
