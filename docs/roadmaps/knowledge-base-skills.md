@@ -80,7 +80,12 @@ needs the owner, and the acceptance criteria for later candidates.
 **Boundary:** documents only. No skill file, no settings change.
 **Promotion trigger:** the owner accepts this roadmap and asks to proceed.
 
-### 2. Consume a store from another project
+### 2. Consume a store from another project (done 2026-10-18)
+
+Plan [0013](../plans/0013-consuming-knowledge-base-skill.md) delivered this: `skills/knowledge-base/SKILL.md`,
+mirrored in `~/.claude`, with `tests/test_knowledge_base_skill_wiring.py`. The live check and an independent review
+changed the skill, and the spec gained the path-check rule (criterion 1a). The text below is kept as the record of the
+boundary.
 
 **Outcome:** a read-only skill that, in any project, locates a store (through
 `module_info` in `.template-manifest`, else a path the owner names). With several

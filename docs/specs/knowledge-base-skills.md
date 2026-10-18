@@ -96,11 +96,14 @@ Trigger descriptions (each a single `description` line in the frontmatter):
 A path the owner names explicitly always overrides automatic discovery. Otherwise the
 consuming skill tries these steps in order and stops at the first that yields a store:
 
-1. **Inside a store.** If the working tree's root (or an ancestor) holds a regular
-   `kb.json`, that store is the target, and no project is involved.
+1. **Inside a store.** Starting at the working directory and going up to the project or git
+   root, and not beyond, look in each directory for a regular `kb.json`. The nearest wins, the
+   store is that directory, and no project is involved. The skill checks each directory and
+   reports the real path found; it does not assume.
 2. **Registered stores.** Read `.template-manifest` at the project root as data. If it is
    absent, unreadable, or malformed, there are no registered stores. Collect every
-   `module_info` entry whose `type` is `knowledge-base`, by module name. An absent
+   `module_info` entry whose `type` is exactly `knowledge-base`, by module name. A `store`
+   that is not a string, or a `type` that differs in any way, is refused. An absent
    `module_info` means "not declared", not an error. Never select by type alone: more
    than one entry may share it.
 3. **A path the owner names.** Used when steps 1 and 2 find nothing. It is checked like any
@@ -108,9 +111,12 @@ consuming skill tries these steps in order and stops at the first that yields a 
 
 For each candidate store:
 
-- Resolve `store` against the project root. Accept only `../name` or an absolute path;
-  refuse any other form. Take the real path, and do not follow a symlink out of the
-  project or the store.
+- Resolve `store` against the project root. Accept only `../name`, where name is one
+  non-empty segment other than `.` and `..`, or an absolute path; refuse any other form.
+  Take the real path, and do not follow a symlink out of the project or the store. Refuse a
+  root that is `/`, the home directory itself, or inside a `.git` directory.
+- State the real path to the owner before the first read from a registered or owner-named
+  store.
 - A missing directory means "not available". Report it by module name and continue; it is
   not an error.
 - Confirm `kb.json` is a regular file whose `kind` is `knowledge-base` and whose `schema`
@@ -119,7 +125,8 @@ For each candidate store:
 - Use the router and spec paths in `kb.json` (authoritative: it is the store's own file).
   The `data` values in `module_info` are a hint; when they disagree with `kb.json`, use
   `kb.json` and report the disagreement. A path must be relative, contain no `..`
-  segment, and stay inside the store after its real path is taken.
+  segment, and stay inside the store after its real path is taken. A store nested inside
+  another store is judged by its own nearest `kb.json`.
 
 **Several stores.** List them by module name with each router's first lines (the
 domains). Choose those relevant to the task; ask the owner when it is unclear. Never guess
@@ -211,7 +218,7 @@ A skill is a thin wrapper over the store's own documents.
 
 | Action | Consuming skill | Authoring skill |
 |---|---|---|
-| Read files in a store | yes, with the file tools, after a read-only `realpath`, `ls`, or `find` shows each file is a regular file whose real path stays inside the store | yes, the same way |
+| Read files in a store | yes, with the file tools, after `realpath` and `ls -ld` show each file is a regular file, not a symlink, whose real path is the store's real path followed by a separator and more path (case-exact) | yes, the same way |
 | Run a store's own tools | never | read-only tools only, in the confirmed target store |
 | Write to a store | never | prompts (the file tools and the lifecycle tools) |
 | Create a store, upgrade a store, run the installer | not applicable | prompts after a `--dry-run` is shown |
@@ -245,11 +252,15 @@ by the live run in candidate 7. A criterion verified only by the live run says s
 
 1. `[K2]` `skills/knowledge-base/SKILL.md` has frontmatter `name: knowledge-base` and a
    single-line `description` that matches the trigger above, and is listed in the manifest.
-1a. `[K2]` The skill states that every store file is checked, with a read-only path command,
-   to be a regular file inside the store before it is read, and that a symlink is never read.
-   The only commands it may run are those read-only path checks. A wiring test searches for each.
+1a. `[K2]` The skill states that each store file, and the project's `.template-manifest` and
+   `kb.json`, is checked with `realpath` and `ls -ld` before it is read: a regular file, not a
+   symlink, whose real path is inside the store by a separator-bounded, case-exact comparison.
+   It states that `ls -l` alone proves nothing, that a symlink is never read or echoed, and that
+   hard links and a change between check and read are residual risks. The only commands it may
+   run are `realpath` and `ls`, each path passed as one quoted argument after `--`, never built
+   from store text, and never `find`. A wiring test searches for each statement.
 2. `[K2]` The skill states the discovery order (inside a store, registered stores, a path the
-   owner names), refuses a `store` that is not `../name` or absolute, treats an absent
+   owner names), refuses a `store` that is not `../name` (one ordinary segment) or absolute, and a root that is `/`, the home directory, or inside `.git`, treats an absent
    `module_info` as undeclared and a missing store as not available, and requires `kb.json`
    `kind` and `schema` before use. A wiring test searches for each statement.
 2a. `[K2]` The skill states that an owner-named path overrides automatic discovery, and a
