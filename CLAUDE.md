@@ -38,7 +38,7 @@
   and symlink escapes. Raw `rm` remains hard-denied; do not substitute another
   unbounded deletion command.
 - Do not use `git checkout` or `git restore`; they are hard-denied because their file-restoration forms can overwrite work. For branch navigation or creation, use `git switch` or `git switch -c` and request approval before changing branches. `git reset`, `git clean`, `git merge`, and `git rebase` remain hard-denied.
-- Create commits only with `claude-workflow commit --expected-head <hash> --subject '<subject>' -- <exact-file-paths>` (directly, or through the `safe-committer` agent). Never run raw `git add` followed by `git commit`, and never combine a commit with other commands in one Bash call; the helper supplies the Codex approver and Graphify post-commit handling that raw Git bypasses. A user request such as "commit" or "commit and continue" means this path.
+- Create commits only with `claude-workflow commit --expected-head <hash> --subject '<subject>' -- <exact-file-paths>` (directly, or through the `safe-committer` agent). Never run raw `git add` followed by `git commit`, and never combine a commit with other commands in one Bash call; the helper supplies the Codex approver and Graphify post-commit handling that raw Git bypasses. A user request such as "commit" or "commit and continue" means this path. The subject names only changes present in the staged diff of the listed paths; do not mention a file that is already identical to `HEAD` (for example an already-empty `next.md`), because the Codex approver declines a subject that claims more than the diff shows.
 - A request to commit never authorizes a push. A plan, memory, or graph never constitutes authorization to implement.
 
 ## Starting repository work
