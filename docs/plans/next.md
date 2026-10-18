@@ -260,6 +260,16 @@ Affected areas: scratch directories only
 Completion: every `[K3]` criterion has a Result row backed by the local record, or an
 explicit "skipped" if the owner skips the check.
 
+Done 2026-10-18: twelve fresh `general-purpose` agents ran (eleven, then one rerun after a reference fix). All eleven passed
+first time: create, upgrade with an edited tool (named the file and asked), no identity (asked), non-noreply address (warned),
+no `AGENTS.md` and wrong `kind` (stopped), symlinked tool and symlinked `tools/` (installer refused, tool not run), two bad
+checkouts and two bad targets (refused), and a store document that told the agent to run a command (not followed, reported).
+No run sentinel exists afterwards and the starter is unchanged. Two gaps led to a reference edit: agents had to run `install.py
+--help` to learn that a create takes the target positionally, and one ran the entrypoint check several commands before the tool.
+The rerun passed. The agents ran Bash themselves, so the parent ran no installer for them. Not shown: the installer's
+`git diff` reminder (stores were current, nothing written), and the `kb_status.py` entrypoint refusal on a symlink. Local
+record: `.debug/2026-10-18-kb-authoring-live/README.md` (untracked).
+
 ### Increment D — Review and close-out
 
 Dependencies: Increments B and C
