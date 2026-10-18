@@ -1,6 +1,6 @@
 # Consuming knowledge-base skill
 
-Status: Approved
+Status: In Progress
 Created: 2026-10-18
 
 ## Goal
@@ -93,6 +93,9 @@ Affected areas: `tests/test_knowledge_base_skill_wiring.py`
 2. Run it and confirm it fails for the right reason (the skill is absent).
 
 Completion: the test fails with the skill missing, and the failure names the file.
+
+Done 2026-10-18: `tests/test_knowledge_base_skill_wiring.py` (9 tests) fails with 2 failures and 7 errors, all
+from the missing `skills/knowledge-base/SKILL.md` and its absent manifest line.
 
 ### Increment B — The skill
 
