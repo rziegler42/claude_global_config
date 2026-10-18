@@ -1,6 +1,6 @@
 # Knowledge-base skills specification and decision
 
-Status: Approved
+Status: In Progress
 Created: 2026-10-18
 
 ## Goal
@@ -101,6 +101,9 @@ Affected areas: none tracked; scratch directories only
 
 Completion: a written note of the observed manifest shape, kept for Increment B; any
 mismatch with the roadmap's assumptions is listed for the owner.
+
+Done 2026-10-18: the note is in the session scratchpad (`incA/NOTE.md`) and its findings are
+summarized for the owner; the `kb.json` root marker is confirmed.
 
 ### Increment B — Specification
 
