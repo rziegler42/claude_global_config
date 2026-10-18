@@ -23,6 +23,11 @@ DISCOVERY = (
     "`kb.json`",
     "`kind`",
     "`schema`",
+    "before you read any file in a store",
+    "regular file whose real path stays inside the store",
+    "never read a symlink",
+    "read-only `realpath`",
+    "do not assume",
 )
 SEVERAL_STORES = (
     "by module name",

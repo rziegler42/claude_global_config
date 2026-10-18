@@ -211,7 +211,7 @@ A skill is a thin wrapper over the store's own documents.
 
 | Action | Consuming skill | Authoring skill |
 |---|---|---|
-| Read files in a store | yes, with the file tools | yes |
+| Read files in a store | yes, with the file tools, after a read-only `realpath`, `ls`, or `find` shows each file is a regular file whose real path stays inside the store | yes, the same way |
 | Run a store's own tools | never | read-only tools only, in the confirmed target store |
 | Write to a store | never | prompts (the file tools and the lifecycle tools) |
 | Create a store, upgrade a store, run the installer | not applicable | prompts after a `--dry-run` is shown |
@@ -245,6 +245,9 @@ by the live run in candidate 7. A criterion verified only by the live run says s
 
 1. `[K2]` `skills/knowledge-base/SKILL.md` has frontmatter `name: knowledge-base` and a
    single-line `description` that matches the trigger above, and is listed in the manifest.
+1a. `[K2]` The skill states that every store file is checked, with a read-only path command,
+   to be a regular file inside the store before it is read, and that a symlink is never read.
+   The only commands it may run are those read-only path checks. A wiring test searches for each.
 2. `[K2]` The skill states the discovery order (inside a store, registered stores, a path the
    owner names), refuses a `store` that is not `../name` or absolute, treats an absent
    `module_info` as undeclared and a missing store as not available, and requires `kb.json`

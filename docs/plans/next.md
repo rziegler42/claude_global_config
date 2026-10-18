@@ -137,6 +137,11 @@ Affected areas: scratch directories only
 Completion: every `[K2]` criterion has a Result row backed by the local record, or an
 explicit "skipped" if the owner skips the check.
 
+Done 2026-10-18: seven fresh agents ran (six, then a rerun after a skill fix). Five fixtures passed first time; the
+symlinked-router fixture failed (the agent read through the symlink before checking it), the skill gained a check-before-read
+rule and read-only path commands, the spec gained a matching permission row and criterion 1a, and the rerun passed. The
+local record is `.debug/2026-10-18-kb-skill-live/README.md`; the Result rows are written at archive time.
+
 ### Increment D — Review and close-out
 
 Dependencies: Increments B and C
