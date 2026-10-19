@@ -92,11 +92,14 @@ For non-trivial, risky, architectural, or ambiguous changes, use Superpowers bra
   inspection might miss affected paths. Skip it for narrow work with known
   files, isolated tests or documentation, mechanical changes, or an active plan
   that already enumerates the complete file scope.
-- Use `verilog-sby-formal` for SymbiYosys (`sby`) harnesses, `.sby` tasks,
-  induction failures, a cover that never reaches its goal, or any request to add
-  an `assume` (for example forcing a push or an opcode), raise a depth, or
-  otherwise make a proof pass or a cover reach, before answering from general
-  knowledge.
+- For SymbiYosys (`sby`) harnesses, `.sby` tasks, induction failures, a cover
+  that never reaches its goal, or any request to add an `assume` (for example
+  forcing a push or an opcode), raise a depth, or otherwise make a proof pass or
+  a cover reach, use the project's formal-verification skill before answering
+  from general knowledge. The template's `formal` module installs it with
+  `install.py --with formal --harness claude` (`--add formal --harness claude`
+  on an existing project). If the project has none, say so and offer that
+  command rather than answering from memory.
 - Use `architecture-decisions` for durable design choices or ADR requests.
 - For changes that materially affect authentication, authorization, secrets, untrusted input, parsing, filesystem/subprocess execution, network boundaries, dependencies, CI permissions, or deployment, use the `security-review` skill and include an adversarial verification when practical.
 - Delegate only bounded work that benefits from isolation. Use `implementer` for an approved implementation slice, `workflow-reviewer` for independent read-only material-risk review, `security-reviewer` for an adversarial security review that needs scratch experiments, `technical-researcher` for current external evidence, `graphify-semantic` only through the Graphify skill, and `safe-committer` only after an explicit commit request.

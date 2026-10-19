@@ -1,6 +1,6 @@
 ---
 name: verilog-verilator-sim
-description: "Use when writing, reviewing, or debugging Verilator-based Verilog-2001 simulation drivers and testbenches: self-checking comparisons against a reference model, an intermittent or flaky simulation failure, a request to add a retry, skip, or timeout increase to make a flaky check pass, a golden-fixture mismatch, waveform/VCD debugging, blocking-vs-non-blocking races, or Verilator-specific warnings (UNOPTFLAT, INITIALDLY, X-elimination). Not for SystemVerilog assertions or `.sby`/formal proofs; see verilog-sby-formal for those."
+description: "Use when writing, reviewing, or debugging Verilator-based Verilog-2001 simulation drivers and testbenches: self-checking comparisons against a reference model, an intermittent or flaky simulation failure, a request to add a retry, skip, or timeout increase to make a flaky check pass, a golden-fixture mismatch, waveform/VCD debugging, blocking-vs-non-blocking races, or Verilator-specific warnings (UNOPTFLAT, INITIALDLY, X-elimination). Not for SystemVerilog assertions or `.sby`/formal proofs; use the project's formal-verification skill, where one is installed, for those."
 ---
 
 # Verilog + Verilator simulation verification
@@ -25,13 +25,13 @@ A Verilator simulation run, driven by the same binary with the same seed and the
 
 ## Design the comparison, not just the stimulus
 
-Compare the DUT against an independently derived reference model, never a restatement of the DUT's own expression — the same rule `verilog-sby-formal` states for `assert`. A model that recomputes the same fixed-width truncation or the same conditional the DUT uses can share the DUT's bug instead of catching it; prefer a differently-derived computation (for example, an arbitrary-precision counter truncated to width, rather than a second copy of the width-bounded increment-and-wrap logic).
+Compare the DUT against an independently derived reference model, never a restatement of the DUT's own expression — the same rule applies to a formal `assert`. A model that recomputes the same fixed-width truncation or the same conditional the DUT uses can share the DUT's bug instead of catching it; prefer a differently-derived computation (for example, an arbitrary-precision counter truncated to width, rather than a second copy of the width-bounded increment-and-wrap logic).
 
 Keep register-modeling always blocks non-blocking (`<=`), including a testbench's own reference-model registers — they represent synchronous state and must sample old values the way real flip-flops do. Reserve blocking assignments (`=`) for a single-writer stimulus or scoreboard-bookkeeping process, where there is no ordering hazard to protect against.
 
 ## Coverage is evidence, not proof
 
-Line and toggle coverage confirm code ran and bits toggled; they say nothing about a cross-signal or exhaustive safety property (mutual exclusion, an occupancy bound across all reachable interleavings), and Verilator's line coverage has no condition/expression coverage, so a fully "covered" line can still hide an untested branch combination. Treat 100% structural coverage as regression-suite health, not as a substitute for a proof; use `verilog-sby-formal` for an exhaustive safety, ordering, or corner-state claim.
+Line and toggle coverage confirm code ran and bits toggled; they say nothing about a cross-signal or exhaustive safety property (mutual exclusion, an occupancy bound across all reachable interleavings), and Verilator's line coverage has no condition/expression coverage, so a fully "covered" line can still hide an untested branch combination. Treat 100% structural coverage as regression-suite health, not as a substitute for a proof; use the project's formal-verification skill for an exhaustive safety, ordering, or corner-state claim.
 
 ## Common mistakes
 
