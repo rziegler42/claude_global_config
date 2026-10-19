@@ -2,7 +2,7 @@
 
 Run from the repository root with:  python3 -B -m unittest discover -s tests
 
-Every test uses throwaway repositories and a fake `graphify`; nothing outside
+Every test uses throwaway repositories; nothing outside
 the temporary directories is touched.
 """
 import json
@@ -163,56 +163,13 @@ class AmendPushedCommits(Case):
         self.assertEqual(code, 0, r.stdout + r.stderr)
 
 
-class GraphOutputMustBeARealDirectory(Case):
-    def test_symlinked_graph_output_is_refused(self):
-        outside = self.base / "other-project-graph"
-        outside.mkdir()
-        marker = outside / ".claude_refresh.json"
-        marker.write_text(json.dumps({"status": "prepared"}))
-        (self.root / "graphify-out").symlink_to(outside)
-        for command in (("graph-abort", "--confirm"), ("graph-prepare",), ("graph-finalize",)):
-            with self.subTest(command=command):
-                code, data, r = self.helper(*command)
-                self.assertNotEqual(code, 0, r.stdout)
-                self.assertIn("symlink", json.dumps(data).lower())
-        self.assertTrue(marker.exists())
-        self.assertEqual(sorted(p.name for p in outside.iterdir()), [".claude_refresh.json"])
-
-
 class ExecutablesAndOutput(Case):
-    def test_repo_supplied_graphify_is_not_executed(self):
-        marker = self.base / "graphify-ran"
-        planted = self.root / "bin"
-        planted.mkdir()
-        (planted / "graphify").write_text('#!/bin/sh\necho ran > "%s"\necho planted\n' % marker)
-        (planted / "graphify").chmod(0o755)
-        out = self.root / "graphify-out"
-        out.mkdir()
-        (out / "graph.json").write_text("{}")
-        good = self.base / "goodbin"
-        good.mkdir()
-        (good / "graphify").write_text("#!/bin/sh\necho trusted\n")
-        (good / "graphify").chmod(0o755)
-        env = dict(ENV, PATH="bin:%s:%s" % (good, ENV["PATH"]))
-        code, data, r = self.helper("graph-query", "question", env=env)
-        self.assertFalse(marker.exists(), "a repository executable ran")
-        self.assertIn("trusted", r.stdout)
-
     def test_origin_credentials_are_not_echoed(self):
         self.git("remote", "add", "origin", "https://user:s3cret-token@example.com/x/y.git")
         code, data, r = self.helper("project-id")
         self.assertEqual(code, 0, r.stderr)
         self.assertNotIn("s3cret-token", r.stdout)
         self.assertNotIn("user:", r.stdout)
-
-    def test_unexpected_exceptions_are_reported_not_tracebacks(self):
-        out = self.root / "graphify-out"
-        out.mkdir()
-        (out / ".graphify_chunk_0.json").write_bytes(b"\xff\xfe\x00bad")
-        code, data, r = self.helper("graph-validate-chunk", "graphify-out/.graphify_chunk_0.json")
-        self.assertNotIn("Traceback", r.stderr)
-        self.assertEqual(data.get("status"), "failed")
-
 
 class SecondReview(Case):
     """Fixes from the second independent review of bin/claude-workflow."""
@@ -225,26 +182,6 @@ class SecondReview(Case):
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
         return module
-
-    def test_graph_ignore_filter_does_not_run_repository_executables(self):
-        marker = self.base / "python-ran"
-        planted = self.root / "bin"
-        planted.mkdir()
-        for name in ("graphify", "python"):
-            (planted / name).write_text('#!/bin/sh\necho %s >> "%s"\nexit 1\n' % (name, marker))
-            (planted / name).chmod(0o755)
-        module = self.load_module()
-        previous = Path.cwd()
-        saved = os.environ.get("PATH", "")
-        os.chdir(self.root)
-        os.environ["PATH"] = "bin:" + saved
-        try:
-            module.graph_ignored_paths(self.root, {"dirty.md"})
-        finally:
-            os.environ["PATH"] = saved
-            os.chdir(previous)
-        self.assertFalse(marker.exists(), "a repository executable ran: " + (
-            marker.read_text() if marker.exists() else ""))
 
     def test_core_worktree_naming_an_ancestor_is_refused(self):
         (self.base / "notes.txt").write_text("sibling\n")
@@ -320,18 +257,6 @@ class SecondReview(Case):
         code, data, r = self.helper("amend-message", "--expected-head", self.head(), "--subject", "fixed")
         self.assertEqual(code, 0, r.stdout + r.stderr)
         self.assertIn("remote-tracking", data.get("note", ""))
-
-    def test_graph_read_path_refuses_a_symlinked_output_directory(self):
-        outside = self.base / "other-graph"
-        outside.mkdir()
-        (outside / "graph.json").write_text("{}")
-        (self.root / "graphify-out").symlink_to(outside)
-        for command in (("graph-query", "q"), ("graph-status",)):
-            with self.subTest(command=command):
-                code, data, r = self.helper(*command)
-                self.assertNotEqual(code, 0, r.stdout)
-                self.assertIn("symlink", json.dumps(data).lower())
-
 
 class FinalReview(Case):
     def test_ordinary_messages_that_mention_the_assistant_are_accepted(self):

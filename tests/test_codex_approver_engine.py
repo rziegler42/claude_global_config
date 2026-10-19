@@ -159,7 +159,7 @@ class MatchRuleTests(unittest.TestCase):
             "commit --expected-head abc --expected-head def --subject s f1",  # repeated single
             "remove f1",                                   # --confirm required
             "amend-message --expected-head a --subject s",  # no rule for the subcommand
-            "graph-prepare", "",
+            "frobnicate", "",
         ):
             with self.subTest(bad=bad):
                 tokens = ca.tokenize(bad)
@@ -373,7 +373,7 @@ class HookProcessTests(unittest.TestCase):
         self.assertIn("invocation_trusted", entries[0]["failed_checks"])
 
     def test_unmatched_command_prints_nothing_and_logs_nothing(self):
-        for command in ("ls -la", "git commit -m x", "claude-workflow graph-status", "echo hi; claude-workflow commit a"):
+        for command in ("ls -la", "git commit -m x", "claude-workflow context", "echo hi; claude-workflow commit a"):
             with self.subTest(command=command):
                 r = self.run_hook(self.event(command))
                 self.assertEqual((r.returncode, r.stdout), (0, ""))

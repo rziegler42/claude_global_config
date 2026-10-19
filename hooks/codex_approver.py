@@ -2083,7 +2083,7 @@ SUBCOMMANDS = {
     "systemctl": "status start stop restart enable disable reload daemon-reload list-units is-active show cat",
     "nix": "build develop shell run flake eval store profile search copy hash log",
     "remote-runner": "submit fetch cancel prune status log logs artifacts recommend remotes list doctor help",
-    "claude-workflow": "commit remove graph-doctor graph-diagnose graph-abort status help",
+    "claude-workflow": "commit remove status help",
     "ask-codex": "archive status init reset prune help",
 }
 SUBCOMMAND_SETS = {tool: frozenset(words.split()) for tool, words in SUBCOMMANDS.items()}

@@ -286,7 +286,7 @@ class CommitterMode(Guard):
             "claude-workflow commit --expected-head %s --subject x" % HEAD,
             "claude-workflow remove --confirm calc.py",
             "claude-workflow amend-message --expected-head %s --subject x" % HEAD,
-            "claude-workflow graph-finalize",
+            "claude-workflow context",
             "git commit -m x", "git push", "git add calc.py", "git reset --hard", "git stash",
             "claude-workflow commit --expected-head %s --subject x -- calc.py; git push" % HEAD,
             "claude-workflow commit --expected-head %s --subject x -- calc.py && git push" % HEAD,
@@ -362,13 +362,6 @@ class ChunkMode(Guard):
                            ("Grep", {"pattern": "x"}), ("WebFetch", {"url": "https://docs.python.org/"}),
                            ("NotebookEdit", {"notebook_path": "x.ipynb"})):
             self.assertEqual(decide("chunk", tool, self.repo, **args), 2, tool)
-
-    def test_agent_frontmatter_attaches_the_chunk_hook(self):
-        text = (ROOT / "agents" / "graphify-semantic.md").read_text()
-        line = next(l for l in text.splitlines() if "matcher:" in l)
-        for tool in ("Read", "Write", "Edit"):
-            self.assertIn(tool, line)
-        self.assertRegex(text, r"review_agent_guard\.py\" chunk")
 
 
 class ThirdReview(Guard):
