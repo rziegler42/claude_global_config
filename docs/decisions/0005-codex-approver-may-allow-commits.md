@@ -3,6 +3,8 @@
 Status: Accepted
 Date: 2026-10-17
 Widened by ADR 0006: `ask-codex archive` joins the ceiling; the rest of this record stands.
+Note 2026-10-19: `claude-workflow commit` no longer runs a post-commit Graphify step (plan 0016), so the
+"post-commit graph step" accepted risk below is moot; the rest of this record stands.
 
 ## Context
 
