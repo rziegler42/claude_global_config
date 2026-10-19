@@ -1,7 +1,7 @@
 # Roadmap: knowledge-base skills
 
 Status: Active
-Updated: 2026-10-18
+Updated: 2026-10-19
 
 This roadmap is direction only. It does not authorize work, change
 `docs/plans/next.md`, or commit this repository to any item below.
@@ -80,7 +80,9 @@ needs the owner, and the acceptance criteria for later candidates.
 **Boundary:** documents only. No skill file, no settings change.
 **Promotion trigger:** the owner accepts this roadmap and asks to proceed.
 
-### 2. Consume a store from another project (done 2026-10-18)
+### 2. Consume a store from another project (done 2026-10-18; moved 2026-10-19)
+
+The skill now ships with the store through the template's harness directories, so this repository no longer carries `skills/knowledge-base/` or its wiring test (the template roadmap `module-harness-files` in `claude_project_template`, candidates 9 and 10). The text below is kept as the record of the boundary.
 
 Plan [0013](../plans/0013-consuming-knowledge-base-skill.md) delivered this: `skills/knowledge-base/SKILL.md`,
 mirrored in `~/.claude`, with `tests/test_knowledge_base_skill_wiring.py`. The live check and an independent review
@@ -209,5 +211,6 @@ Still the owner's call per plan: whether to review each skill's plan or spec wit
 ## Related decisions
 
 - [ADR 0008](../decisions/0008-knowledge-base-skills-are-thin-wrappers.md) (`Accepted`).
-- In other repositories: `claude_knowledge_base` ADR 0003 (standalone stores coordinated
+- In other repositories: `claude_project_template` ADR 0004 and its roadmap `module-harness-files`
+  (skills that serve a module ship in the module), `claude_knowledge_base` ADR 0003 (standalone stores coordinated
   by the template) and its `docs/specs/domain-lifecycle.md`.

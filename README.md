@@ -22,17 +22,20 @@ downloads, synced skills, or other generated and machine-specific state.
 - `hooks/codex_approver.py`, `codex-approver/` (`config.json`, `rubric.md`,
   `verdict.schema.json`, and `rules/`) — the advice-only Codex approver for
   `claude-workflow commit` and `remove` prompts (see Codex approver).
-- `skills/` — architecture-decision, knowledge-base (read-only use of knowledge-base
-  stores; see `docs/roadmaps/knowledge-base-skills.md`), knowledge-base-authoring
-  (create and upgrade a store, create a domain; wave and expand follow), security-review,
-  second-opinion, and Verilog simulation (Verilator) skills maintained with this
-  configuration. Skills that serve one template module ship in that module.
+- `skills/` — architecture-decision, knowledge-base-authoring (create and upgrade a store,
+  create a domain; wave and expand follow; see `docs/roadmaps/knowledge-base-skills.md`),
+  security-review, and Verilog simulation (Verilator) skills maintained with this
+  configuration. Skills that serve one template module ship in that module: `second-opinion`
+  in the `codex` module and `knowledge-base` (read-only use of stores) in the starter's store
+  module, both installed with `--harness claude`.
+- `global-config.json` — the marker file the project template reads to report that this
+  configuration is present (`{"schema": 1}`, mirrored like any other file).
 - `tests/` — regression tests for the helpers and the guard (see Testing).
 - `bin/claude-workflow` — guarded Git operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
-- `bin/ask-codex`, `ask-codex/` (`config.json` and the review kinds),
-  `skills/second-opinion/` — bounded, read-only Codex review of plans, specs,
-  and roadmaps driven from Claude Code (see Second opinion).
+- `bin/ask-codex`, `ask-codex/` (`config.json` and the review kinds) — bounded,
+  read-only Codex review of plans, specs, and roadmaps driven from Claude Code
+  through the template's `second-opinion` skill (see Second opinion).
 - `docs/` — this repository's own documentation, not installed: `specs/`
   (durable requirements, including the second-opinion specification),
   `decisions/` (ADRs), and `plans/` (the active plan `next.md` and archived
@@ -207,8 +210,10 @@ not recognize is denied. The hooks resolve the script through
 Claude Code can ask Codex to review `docs/plans/next.md`, a spec in
 `docs/specs/`, a roadmap in `docs/roadmaps/`, or an ADR in `docs/decisions/` using your ChatGPT subscription
 (no API key). It is on demand only: ask Claude to "have Codex review the plan"
-(or "the spec", "the roadmap", "the ADR"), or invoke `/second-opinion`. A spec, roadmap or ADR
-can be reviewed at any status; after you archive its review, a later review
+(or "the spec", "the roadmap", "the ADR"), or invoke `/second-opinion`. The skill is not in
+this repository: a project gets it from the template's `codex` module
+(`install.py --with codex --harness claude`, or `--add codex --harness claude`). A spec, roadmap
+or ADR can be reviewed at any status; after you archive its review, a later review
 starts fresh. The `second-opinion` skill runs
 the `ask-codex` helper, which is read-only and round-limited:
 

@@ -9,7 +9,8 @@ A knowledge-base store is created by the `claude_knowledge_base` starter's insta
 domains of claim-tagged playbook entries. This skill is a thin wrapper over the starter's and
 the store's own documents. It names an operation, links the document that describes it, and runs
 only the tools and flags listed here. To read a store and answer from it, use the `knowledge-base`
-skill instead.
+skill instead; it ships with the store, and a project gets it only when the owner registers, approves and
+installs the store through the template (the starter's README gives the commands).
 
 Specification: `docs/specs/knowledge-base-skills.md` in the `claude_global_config` repository.
 

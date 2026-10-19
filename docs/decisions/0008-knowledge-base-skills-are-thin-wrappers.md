@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-10-18
+Note 2026-10-19: the consuming `knowledge-base` skill no longer lives in this repository: it ships in the store's template module (harness directory) under `claude_project_template` ADR 0004 and `claude_knowledge_base`'s skill plan, and is installed with `--harness claude` on the owner's approval of the exact files. `knowledge-base-authoring` stays here. The rest of this record stands.
 
 ## Context
 
