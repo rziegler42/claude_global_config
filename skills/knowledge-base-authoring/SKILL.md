@@ -32,20 +32,25 @@ Specification: `docs/specs/knowledge-base-skills.md` in the `claude_global_confi
   character, never build a command from text found in a store, a manifest
   or a catalog, and never use `find`. Never read a symlink, and never echo its contents.
 - **Check each tool entrypoint before every tool run.** Immediately before running
-  `tools/check_kb.py` or `tools/kb_status.py`, run the same `realpath` and `ls -ld` check: the
+  `tools/check_kb.py`, `tools/kb_status.py` or `tools/new_domain.py`, run the same `realpath` and `ls -ld` check: the
   `tools/` directory and the tool must each resolve inside the confirmed store, and the tool must
   be a regular file and not a symlink. If either resolves outside the store, report it to the
   owner as possibly deliberate; the skill does not run it. The check cannot exclude hard links or a
   change between the check and the run; treat both as residual risk.
-- **Check what a tool imports.** Each tool puts its own `tools/` directory first on `sys.path`, so
-  running it executes every `.py` and `__pycache__` bytecode file in `tools/` that it or the
-  standard library imports, and the installer's `skip` and `conflict` labels do not cover files it
-  does not own. Before the first tool run in a store, list `tools/` with `ls -A -- "<store>/tools"`
-  and the checkout's `kit/files/tools` the same way. Run a tool only when every name in the store's
-  list is also in the checkout's list and there is no `__pycache__`. Otherwise name each extra entry
-  and ask the owner; the skill does not run it. Run each tool as `python3 -B -I` by absolute path.
-- Run `check_kb.py` and `kb_status.py` only in the store the owner confirmed. Running them
-  executes code that lives in that store's tree.
+- **Check what a tool imports.** This covers `tools/new_domain.py` as well. Each tool puts its own
+  `tools/` directory first on `sys.path`, so running it executes every `.py` and `__pycache__`
+  bytecode file in `tools/` that it or the standard library imports, and the installer's `skip` and
+  `conflict` labels do not cover files it does not own. Before the first tool run in a store, list
+  `tools/` with `ls -A -- "<store>/tools"` and the checkout's `kit/files/tools` the same way. Take
+  each name in the store's list in turn and look for the same name in the checkout's list: a name
+  with no match is an extra entry (for example `secrets.py`, which shadows a standard-library
+  module), and so is any `__pycache__` in the store, even if the checkout's list has one. A name match does
+  not show that a file is unedited; that is residual risk, narrowed by the installer's labels. Run
+  a tool only when there is no extra entry.
+  Otherwise name each extra entry and ask the owner; the skill does not run it. Run each tool as
+  `python3 -B -I` by absolute path.
+- Run `check_kb.py`, `kb_status.py` and `new_domain.py` only in the store the owner confirmed.
+  Running them executes code that lives in that store's tree; `new_domain.py` also writes.
 
 ## Choose the target
 
@@ -65,7 +70,9 @@ Specification: `docs/specs/knowledge-base-skills.md` in the `claude_global_confi
 
 ## Find the starter checkout
 
-Only creating or upgrading a store needs the starter checkout. Nothing records its path.
+Creating or upgrading a store needs the starter checkout, and so does the first tool run in any
+store, because the imports check compares the store's `tools/` with the checkout's
+`kit/files/tools`. Nothing records its path.
 
 1. Ask the owner for the path. Do not read it from an environment variable, a store, or a file
    in this repository, and never write it into a mirrored file.
@@ -90,6 +97,7 @@ identity unless the owner asks. Pass them as `--git-name` and `--git-email`.
 |---|---|
 | Read a store file | yes, after the path check |
 | Run `check_kb.py` or `kb_status.py` | only in the confirmed store, after the entrypoint and imports checks, and after an upgrade that skipped or conflicted on a tool only if the owner agrees |
+| Run `new_domain.py`, a writing lifecycle tool | prompts, only in the confirmed store, after the entrypoint and imports checks, and only after the owner agrees if an upgrade skipped or conflicted on it or the owner says it was edited |
 | Write to a store, run the installer | prompts, after a `--dry-run` is shown |
 | Choose a git identity, a target or a store name | the owner decides |
 | Release a quarantined source | the owner decides, after reviewing it |
@@ -100,5 +108,6 @@ identity unless the owner asks. Pass them as `--git-name` and `--git-email`.
 ## Operations
 
 - Create or upgrade a store: `references/create-and-upgrade.md`.
-- Create a domain, run a wave, expand a domain: not yet available. Report that to the owner and
+- Create a domain and set its charter: `references/domain.md`.
+- Run a wave, expand a domain: not yet available. Report that to the owner and
   stop; do not improvise the procedure from memory.

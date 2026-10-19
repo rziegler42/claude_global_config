@@ -25,7 +25,7 @@ downloads, synced skills, or other generated and machine-specific state.
 - `skills/` — architecture-decision, FreeCAD scripting (FreeCAD 1.1), Graphify
   workflow, knowledge-base (read-only use of knowledge-base stores; see
   `docs/roadmaps/knowledge-base-skills.md`), knowledge-base-authoring (create and upgrade
-  a store; domain, wave and expand follow), security-review, and Verilog
+  a store, create a domain; wave and expand follow), security-review, and Verilog
   formal-verification (SymbiYosys) and simulation (Verilator) skills maintained with
   this configuration.
 - `tests/` — regression tests for the helpers and the guard (see Testing).

@@ -68,3 +68,4 @@ skills/second-opinion/SKILL.md
 skills/knowledge-base/SKILL.md
 skills/knowledge-base-authoring/SKILL.md
 skills/knowledge-base-authoring/references/create-and-upgrade.md
+skills/knowledge-base-authoring/references/domain.md

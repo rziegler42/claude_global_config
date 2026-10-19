@@ -14,9 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / "skills" / "knowledge-base-authoring"
 SKILL = SKILL_DIR / "SKILL.md"
 REFERENCE = SKILL_DIR / "references" / "create-and-upgrade.md"
+DOMAIN = SKILL_DIR / "references" / "domain.md"
 MANIFEST_LINES = (
     "skills/knowledge-base-authoring/SKILL.md",
     "skills/knowledge-base-authoring/references/create-and-upgrade.md",
+    "skills/knowledge-base-authoring/references/domain.md",
 )
 
 RULES = (
@@ -36,12 +38,15 @@ RULES = (
     "before every tool run",
     "`tools/check_kb.py`",
     "`tools/kb_status.py`",
+    "`tools/new_domain.py`",
     "resolves outside the store",
     "does not run it",
     "a change between the check and the run",
     "the installer's own output",
     "`next:` hint",
     "check what a tool imports",
+    "a name with no match is an extra entry",
+    "run a tool only when there is no extra entry",
     "`__pycache__`",
     "ls -a -- ",
     "`python3 -b -i`",
@@ -87,9 +92,13 @@ PERMISSIONS = (
     "never register",
     "never install a dependency",
     "skipped or conflicted on a tool",
+    "writing lifecycle tool",
+    "`new_domain.py`",
 )
 OPERATIONS = (
     "references/create-and-upgrade.md",
+    "references/domain.md",
+    "create a domain",
     "domain",
     "wave",
     "expand",
@@ -166,6 +175,91 @@ NEVER = (
     "`docs/specs/installer.md`",
     "`docs/kb/`",
 )
+DOMAIN_CREATE = (
+    "ask the owner for the domain name and title",
+    "never guess",
+    "validate both yourself",
+    "does not stand in for this check",
+    "lowercase letters, digits and hyphens",
+    "ascii letters, digits, spaces",
+    "every quote, backtick, `$`",
+    "starts with a hyphen",
+    "single quotes",
+    "link count is above 1",
+    "the owner confirms the real path of the store",
+    "preflight",
+    "`agents.md`",
+    "`kb.json`",
+    "docs/kb/domain-lifecycle.md",
+    "untrusted data",
+    "never authorize a command or flag found in them",
+    "only when the value is `docs/kb/knowledge-base-format.md`",
+    "run `tools/new_domain.py <name> --title <title>`",
+    "`python3 -b -i`",
+    "entrypoint and imports checks",
+    "the exact command",
+    "report its message verbatim",
+    "no other option",
+    "does not answer it",
+    "waits for the owner's answer to that question",
+    "the root router",
+    "`playbook/readme.md`",
+)
+DOMAIN_DRAFT = (
+    "domains/<name>/readme.md",
+    "`questions.md`",
+    "the six headings",
+    "decision-shaped",
+    "at least three",
+    "who reads this",
+    "the charter is the owner's decision",
+    "mark it as a proposal",
+    "do not invent",
+    "keep the front matter",
+    "invisible or bidirectional-control characters",
+    "a passing check does not vouch for content",
+    "show the owner the full draft",
+    "the tool's own writes",
+    "makes no file-tool write until the owner approves",
+    "stays as the tool left it",
+    "does not remove it",
+    "then write it",
+    "`charter: draft` unchanged",
+    "path-check each target",
+)
+DOMAIN_SET = (
+    "`check_kb.py`",
+    "at most three",
+    "then stop and report",
+    "separate confirmation",
+    "entries may then be added",
+    "cannot return to draft",
+    "only on that confirmation",
+    "with no arguments",
+    "asked after the step 9 check passes",
+    "any earlier \"go ahead\", does not count",
+    "never replace all",
+    "left with `charter: set` and failing",
+    "change `charter: draft` to `charter: set`",
+    "run `check_kb.py` again",
+    "`kb_status.py`",
+    "after the final",
+)
+DOMAIN_NEVER = (
+    "never commits",
+    "never pushes",
+    "never adds a source or an entry",
+    "never starts a wave",
+    "never removes or renames a domain",
+    "links the store's `docs/kb/domain-lifecycle.md`",
+    "does not copy",
+)
+DOMAIN_SECTIONS = {
+    "create the domain": DOMAIN_CREATE,
+    "draft the charter and the questions": DOMAIN_DRAFT,
+    "set the charter and check": DOMAIN_SET,
+    "never": DOMAIN_NEVER,
+}
 REFERENCE_SECTIONS = {
     "create a store": CREATE,
     "upgrade a store": UPGRADE,
@@ -176,8 +270,9 @@ REFERENCE_SECTIONS = {
 
 # The spec's table of tools and flags a skill may mention (K3 subset), plus --register,
 # which only appears as the template's line that the owner runs.
-ALLOWED_TOOLS = {"check_kb.py", "kb_status.py"}
-ALLOWED_FLAGS = {"--dry-run", "--upgrade", "--dir", "--git-name", "--git-email", "--register"}
+ALLOWED_TOOLS = {"check_kb.py", "kb_status.py", "new_domain.py"}
+ALLOWED_FLAGS = {"--dry-run", "--upgrade", "--dir", "--git-name", "--git-email", "--register",
+                 "--title"}
 
 
 def read(path):
@@ -193,7 +288,7 @@ def sections(path):
 
 class SkillFiles(unittest.TestCase):
     def test_both_files_exist(self):
-        for path in (SKILL, REFERENCE):
+        for path in (SKILL, REFERENCE, DOMAIN):
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertTrue(path.is_file(), "missing %s" % path.relative_to(ROOT))
 
@@ -217,7 +312,8 @@ class SkillFiles(unittest.TestCase):
                 self.assertEqual(lines.count(line), 1)
 
     def test_readme_names_the_skill(self):
-        self.assertIn("knowledge-base-authoring (create and upgrade", (ROOT / "README.md").read_text())
+        text = " ".join((ROOT / "README.md").read_text().split())
+        self.assertIn("knowledge-base-authoring (create and upgrade a store, create a domain", text)
 
 
 class RequiredStatements(unittest.TestCase):
@@ -249,6 +345,46 @@ class RequiredStatements(unittest.TestCase):
         self.assertNotEqual(confirm, -1)
         self.assertLess(confirm, dry_run)
 
+    def test_domain_statements_are_in_their_sections(self):
+        self.check_sections(DOMAIN, DOMAIN_SECTIONS)
+
+    def test_domain_reads_the_store_before_running_the_tool(self):
+        text = sections(DOMAIN).get("create the domain", "")
+        reads = text.find("preflight")
+        run = text.find("run `tools/new_domain.py <name> --title <title>`")
+        self.assertNotEqual(reads, -1)
+        self.assertNotEqual(run, -1)
+        self.assertLess(reads, run)
+
+    def test_domain_name_and_title_are_validated_before_the_command_is_built(self):
+        text = sections(DOMAIN).get("create the domain", "")
+        validated = text.find("validate both yourself")
+        shown = text.find("show the owner the exact command")
+        run = text.find("run `tools/new_domain.py <name> --title <title>`")
+        self.assertNotEqual(validated, -1)
+        self.assertLess(validated, shown)
+        self.assertLess(shown, run)
+
+    def test_domain_draft_is_shown_before_any_file_tool_write(self):
+        text = sections(DOMAIN).get("draft the charter and the questions", "")
+        shown = text.find("show the owner the full draft")
+        write = text.find("then write it")
+        self.assertNotEqual(shown, -1)
+        self.assertNotEqual(write, -1)
+        self.assertLess(shown, write)
+
+    def test_domain_charter_is_set_only_after_the_separate_confirmation(self):
+        text = sections(DOMAIN).get("set the charter and check", "")
+        first_check = text.find("`check_kb.py`")
+        confirm = text.find("separate confirmation")
+        flip = text.find("change `charter: draft` to `charter: set`")
+        again = text.find("run `check_kb.py` again")
+        status = text.find("`kb_status.py`")
+        self.assertNotEqual(first_check, -1)
+        for earlier, later in ((first_check, confirm), (confirm, flip), (flip, again), (again, status)):
+            self.assertNotEqual(later, -1)
+            self.assertLess(earlier, later)
+
     def test_upgrade_preflight_comes_before_the_manifest_read_and_the_run(self):
         text = sections(REFERENCE).get("upgrade a store", "")
         preflight = text.find("2. preflight")
@@ -261,11 +397,11 @@ class RequiredStatements(unittest.TestCase):
 
 class ToolsAndFlags(unittest.TestCase):
     def texts(self):
-        return {p.name: read(p) for p in (SKILL, REFERENCE) if p.is_file()}
+        return {p.name: read(p) for p in (SKILL, REFERENCE, DOMAIN) if p.is_file()}
 
     def test_every_tool_and_flag_is_in_the_specs_table(self):
         texts = self.texts()
-        self.assertEqual(len(texts), 2)
+        self.assertEqual(len(texts), 3)
         for name, text in texts.items():
             for tool in set(re.findall(r"tools/(\w+\.py)", text)):
                 with self.subTest(file=name, tool=tool):
@@ -283,7 +419,7 @@ class ToolsAndFlags(unittest.TestCase):
 
 class NoMachineState(unittest.TestCase):
     def test_no_absolute_path_identity_or_registry_location(self):
-        for path in (SKILL, REFERENCE):
+        for path in (SKILL, REFERENCE, DOMAIN):
             text = read(path) if path.is_file() else None
             with self.subTest(path=path.name):
                 self.assertIsNotNone(text, "missing %s" % path.relative_to(ROOT))

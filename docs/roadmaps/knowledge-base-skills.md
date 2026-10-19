@@ -121,7 +121,11 @@ with the template unless the owner asks.
 **Promotion trigger:** candidate 2 is complete and the owner wants to create
 stores through Claude.
 
-### 4. Create a domain and set its charter
+### 4. Create a domain and set its charter (done 2026-10-18)
+
+Plan [0015](../plans/next.md) delivered this: `skills/knowledge-base-authoring/references/domain.md`, with the `SKILL.md` edits and
+the wiring test extended, mirrored in `~/.claude`. The live check and two reviews changed the skill (a pre-shell allow-list for name and
+title, a separate confirmation before `charter: set`, a mechanical imports comparison). The text below is kept as the record of the boundary.
 
 **Outcome:** an authoring-skill operation for operation 1 of the lifecycle: run `new_domain.py`,
 draft the charter sections and at least three decision-shaped questions for the
