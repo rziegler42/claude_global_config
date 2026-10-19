@@ -16,20 +16,19 @@ downloads, synced skills, or other generated and machine-specific state.
 - `settings-policy.txt` — which `settings.json` keys are local preferences or
   open maps; everything else is strict (see Settings policy and file modes).
 - `agents/` — focused implementer, read-only reviewer, adversarial
-  security-reviewer, researcher, committer, and Graphify semantic agents.
+  security-reviewer, researcher, and committer agents.
 - `hooks/review_agent_guard.py` — allowlist `PreToolUse` guard wired into the
   reviewer, security-reviewer, and researcher agents (see below).
 - `hooks/codex_approver.py`, `codex-approver/` (`config.json`, `rubric.md`,
   `verdict.schema.json`, and `rules/`) — the advice-only Codex approver for
   `claude-workflow commit` and `remove` prompts (see Codex approver).
-- `skills/` — architecture-decision, FreeCAD scripting (FreeCAD 1.1), Graphify
-  workflow, knowledge-base (read-only use of knowledge-base stores; see
-  `docs/roadmaps/knowledge-base-skills.md`), knowledge-base-authoring (create and upgrade
-  a store, create a domain; wave and expand follow), security-review, and Verilog
-  formal-verification (SymbiYosys) and simulation (Verilator) skills maintained with
-  this configuration.
+- `skills/` — architecture-decision, knowledge-base (read-only use of knowledge-base
+  stores; see `docs/roadmaps/knowledge-base-skills.md`), knowledge-base-authoring
+  (create and upgrade a store, create a domain; wave and expand follow), security-review,
+  second-opinion, and Verilog simulation (Verilator) skills maintained with this
+  configuration. Skills that serve one template module ship in that module.
 - `tests/` — regression tests for the helpers and the guard (see Testing).
-- `bin/claude-workflow` — guarded Git and Graphify operations.
+- `bin/claude-workflow` — guarded Git operations.
 - `bin/remote-runner` — optional Git-backed remote test runner.
 - `bin/ask-codex`, `ask-codex/` (`config.json` and the review kinds),
   `skills/second-opinion/` — bounded, read-only Codex review of plans, specs,
@@ -169,7 +168,7 @@ from `config-manifest.txt` stops future installations but does not remove the
 existing file from `~/.claude`; inspect and remove that working file separately
 if it is no longer wanted. The installer also does not pull Git changes or
 install, update, or remove external dependencies such as Claude Code,
-Superpowers, Graphify, SSH configuration, or project toolchains. Update those
+Superpowers, SSH configuration, or project toolchains. Update those
 with their own documented commands and review their release notes separately.
 
 To test an update without touching the working configuration, install into a
@@ -306,12 +305,10 @@ Run the regression tests from the repository root:
 
 ```sh
 python3 -B -m unittest discover -s tests
-python3 -B -m unittest discover -s skills/graphify-workflow/tests
 ```
 
 Set `TOOLS_BIN` or `GUARD` to run the same tests against another copy of the
-tools or the guard. The Graphify end-to-end tests need the `graphify` CLI on
-`PATH`.
+tools or the guard.
 
 ## Superpowers
 
@@ -326,40 +323,6 @@ Restart Claude Code after installing or updating a plugin. Superpowers may
 shape plan content, but this configuration keeps the sole active plan in
 `docs/plans/next.md` unless repository-owned instructions explicitly choose a
 different location.
-
-## Graphify
-
-Graphify is optional for narrow work but required by the `graphify-workflow`
-skill and the graph-related `claude-workflow` commands. Install `uv`, then the
-Graphify CLI package:
-
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install graphifyy
-graphify --version
-```
-
-The helper expects the `graphify` executable on `PATH`. Graph output is written
-inside the target project under `graphify-out/` and should normally remain
-untracked.
-
-For queries, use one anchor and one relationship at a time. Prefer
-`graph-explain` for component context, `graph-affected` for impact, and
-`graph-path` between two known nodes; reserve `graph-query` for orientation when
-the anchor is unknown. A `[!] TRUNCATED` result is incomplete rather than
-failed: narrow to a returned node before raising the default 2,000-token budget,
-and do not clip Graphify output with `head`, `tail`, or `cut`. One automatic
-narrowing follow-up is allowed after truncation, and conclusions still require
-verification against current repository files.
-
-Semantic refreshes group ordinary sources by both file count and total byte
-size, while exceptionally large sources receive their own chunk. Each semantic
-worker must read every assigned source through EOF before writing, and its chunk
-contains exact source/digest coverage receipts checked against the prepared
-manifest. The parent accepts only an explicit completion handoff and treats the
-validator's counts as authoritative. These checks detect missing, stale, or
-partial coverage declarations; they do not prove the quality or completeness of
-the worker's semantic interpretation.
 
 ## Optional remote runner
 

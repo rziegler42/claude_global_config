@@ -171,6 +171,7 @@ class ExecutablesAndOutput(Case):
         self.assertNotIn("s3cret-token", r.stdout)
         self.assertNotIn("user:", r.stdout)
 
+
 class SecondReview(Case):
     """Fixes from the second independent review of bin/claude-workflow."""
 
@@ -257,6 +258,7 @@ class SecondReview(Case):
         code, data, r = self.helper("amend-message", "--expected-head", self.head(), "--subject", "fixed")
         self.assertEqual(code, 0, r.stdout + r.stderr)
         self.assertIn("remote-tracking", data.get("note", ""))
+
 
 class FinalReview(Case):
     def test_ordinary_messages_that_mention_the_assistant_are_accepted(self):

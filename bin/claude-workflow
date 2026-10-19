@@ -458,6 +458,9 @@ def workflow_context(root):
     )
 
 
+# Repository settings shaped like "a program or command to run". A name list kept missing keys
+# (gpg.ssh.defaultKeyCommand ran code), so the shape decides. hooks/codex_approver.py declines the same
+# shapes before it approves a commit, and tests/test_codex_approver_tools.py checks the two agree.
 EXEC_KEY = re.compile(
     r".*\.(program|command|driver|cmd|clean|smudge|process|textconv|external|defaultkeycommand)"
     r"|core\.(hookspath|fsmonitor|sshcommand)"
