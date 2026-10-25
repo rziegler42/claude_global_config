@@ -1,0 +1,27 @@
+{
+  "id": "safe-git-remove",
+  "tool": "safe-git",
+  "subcommand": "remove",
+  "collector": "remove",
+  "checks": [
+    "confirm_present",
+    "removal_valid",
+    "ignore_status_known",
+    "preview_matches_arguments",
+    "no_git_metadata"
+  ],
+  "rubric": "remove",
+  "required": [
+    "--confirm"
+  ],
+  "flags": {
+    "--confirm": "bool",
+    "--recursive": "bool"
+  },
+  "positionals": "paths",
+  "review_checks": [
+    "targets_look_disposable",
+    "scope_is_narrow",
+    "no_reviewer_directed_text"
+  ]
+}

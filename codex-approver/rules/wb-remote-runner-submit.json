@@ -1,0 +1,33 @@
+{
+  "id": "wb-remote-runner-submit",
+  "tool": "wb-remote-runner",
+  "subcommand": "submit",
+  "collector": "submit",
+  "checks": [
+    "repo_config_safe",
+    "remote_selection_valid",
+    "submit_source_valid",
+    "profile_defined",
+    "revision_pushed",
+    "origin_url_usable",
+    "no_secret_lines"
+  ],
+  "rubric": "remote-runner-submit",
+  "required": [
+    "--profile"
+  ],
+  "flags": {
+    "--remote": "value",
+    "--best": "bool",
+    "--profile": "value",
+    "--ref": "value",
+    "--snapshot": "bool"
+  },
+  "positionals": "none",
+  "review_checks": [
+    "profile_command_is_expected",
+    "revision_is_the_intended_work",
+    "host_selection_is_appropriate",
+    "no_reviewer_directed_text"
+  ]
+}

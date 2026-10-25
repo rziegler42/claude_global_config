@@ -52,12 +52,16 @@ SPELLINGS = (
 REMOTE_RUNNER_SPELLINGS = tuple(spelling.replace("claude-workflow", "remote-runner") for spelling in SPELLINGS)
 ASK_CODEX_SPELLINGS = tuple(spelling.replace("claude-workflow", "ask-codex") for spelling in SPELLINGS)
 GIT_SPELLINGS = ("git",)
+# The workbench's own commit and remote-job commands, run through its launcher. Their tool names differ from the
+# global helpers' so a rule for one can never match the other's spelling.
+WB_SPELLING_TOOL = {"wb run safe-git": "safe-git", "wb run remote-runner": "wb-remote-runner"}
 SPELLING_TOOL = dict(
     [(spelling, "claude-workflow") for spelling in SPELLINGS]
     + [(spelling, "remote-runner") for spelling in REMOTE_RUNNER_SPELLINGS]
     + [(spelling, "ask-codex") for spelling in ASK_CODEX_SPELLINGS]
-    + [(spelling, "git") for spelling in GIT_SPELLINGS])
-SUPPORTED_TOOLS = ("claude-workflow", "remote-runner", "ask-codex", "git")
+    + [(spelling, "git") for spelling in GIT_SPELLINGS]
+    + list(WB_SPELLING_TOOL.items()))
+SUPPORTED_TOOLS = ("claude-workflow", "remote-runner", "ask-codex", "git", "safe-git", "wb-remote-runner")
 # How many positional words a rule accepts: (minimum, maximum or None).
 POSITIONAL_COUNTS = {"paths": (1, None), "none": (0, 0), "one": (1, 1), "up-to-two": (0, 2), "two-or-more": (2, None)}
 VERDICT_WORDS = ("approve", "decline", "no_verdict")
@@ -446,9 +450,42 @@ def find_on_path(name, path_value, cwd):
     return None, "not_found:" + name
 
 
+def resolve_launcher(name, path_value, cwd):
+    """Decide whether `name` would run a launcher script from outside the repository under a trusted interpreter.
+
+    The workbench launcher has no installed copy to compare with. As for plain git it has to resolve outside the
+    repository, and so does the file it resolves to. Its shebang then gets the interpreter test the helpers get,
+    and because the launcher runs `python3` through PATH, that must resolve outside the repository too.
+    """
+    launcher, why = find_on_path(name, path_value, cwd)
+    if launcher is None:
+        return False, why
+    boundary = repo_boundary(cwd)
+    if is_inside(launcher, boundary):
+        return False, "launcher_inside_repository"
+    try:
+        with open(launcher, "rb") as handle:
+            shebang = handle.readline(200).decode("utf-8", "replace").strip()
+    except OSError:
+        return False, "launcher_unreadable"
+    if shebang != "#!/usr/bin/env python3":
+        if "\0" in shebang or len(shebang.split()) != 1 or not shebang.startswith("#!/"):
+            return False, "unrecognised_shebang"
+        if is_inside(os.path.realpath(shebang[2:]), boundary):
+            return False, "interpreter_inside_repository"
+    python, why = find_on_path("python3", path_value, cwd)
+    if python is None:
+        return False, why
+    if is_inside(python, boundary):
+        return False, "interpreter_inside_repository"
+    return True, None
+
+
 def resolve_invocation(spelling, path_value, home, cwd, installed=None):
     """Decide whether the command would execute the installed helper under a trusted interpreter."""
     tool = SPELLING_TOOL[spelling]
+    if spelling in WB_SPELLING_TOOL:
+        return resolve_launcher("wb", path_value, cwd)
     if tool == "git":
         # Plain git has no installed copy to compare with; it only has to resolve outside the repository.
         git, why = find_on_path("git", path_value, cwd)

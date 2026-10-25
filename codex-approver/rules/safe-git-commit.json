@@ -1,0 +1,36 @@
+{
+  "id": "safe-git-commit",
+  "tool": "safe-git",
+  "subcommand": "commit",
+  "collector": "commit",
+  "checks": [
+    "head_matches",
+    "repo_config_safe",
+    "staging_state_ok",
+    "paths_valid",
+    "message_valid",
+    "paths_not_credentials",
+    "paths_regular",
+    "facts_complete",
+    "no_secret_lines"
+  ],
+  "rubric": "commit",
+  "required": [
+    "--expected-head",
+    "--subject"
+  ],
+  "flags": {
+    "--expected-head": "value",
+    "--subject": "value",
+    "--body": "value",
+    "--trailer": "multi",
+    "--leave-other-staged": "bool"
+  },
+  "positionals": "paths",
+  "review_checks": [
+    "message_matches_change",
+    "scope_is_coherent",
+    "change_is_safe_in_itself",
+    "no_reviewer_directed_text"
+  ]
+}
